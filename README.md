@@ -91,6 +91,18 @@ This directly addresses the freeze observed earlier: stale teammates no longer c
 
 ---
 
+## Robot POV: Discovery → Help → Consensus
+
+1. **Spot the gold** – While executing `step_explore`, a robot sees that its current cell holds gold. The next `sense` task refreshes teammate sightings (with Lamport timestamps) and confirms who is nearby.
+2. **Ask for backup** – From the fresh subset of `known_team_positions`, it picks the closest teammate and sends a Lamport-stamped `help_request` naming the gold cell. `_help_requested` and `_help_wait_counter` flags track the waiting period.
+3. **Hold position** – For up to six ticks it rotates in place, watching for teammates whose fresh last-seen position matches the same cell. If no partner arrives before the watchdog fires, it clears the request and immediately requeues exploration, guaranteeing it won’t freeze.
+4. **Start consensus** – Whenever it stands on gold, `pair_consensus` runs. `peers_on_cell` gathers only those teammates seen within the freshness window. If there are at least two, the lowest-ID robot proposes a pair and broadcasts `paxos_prepare` to the fresh peers.
+5. **Reach agreement** – Robots reply with `paxos_promise`; once a majority of fresh peers agree, `integrate_promises` records the decided pair. Robots not in the pair continue exploring; those chosen switch to `TRANSPORTER`, announce coordinated pickup intents, and move toward deposit.
+
+Freshness filtering and consensus garbage collection ensure only robots physically present participate, while the watchdog lets anyone resume exploring if coordination stalls.
+
+---
+
 ## Simulation Loop (`cpr_sim/sim.py`)
 
 Each tick performs the following phases:
