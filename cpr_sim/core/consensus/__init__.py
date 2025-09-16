@@ -1,0 +1,1 @@
+# Paxos consensus module for robot coordination
