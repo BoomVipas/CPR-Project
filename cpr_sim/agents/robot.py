@@ -5,7 +5,7 @@ from ..core.types import DIRS, DIR_ORDER, addv
 from ..core.bus import Msg
 from ..core.scheduler import EDF, Task
 from ..core.clocks import LamportClock
-from ..core.consensus.paxos import Proposer, Acceptor, Promise
+from ..core.consensus.paxos import Proposer, Acceptor
 
 @dataclass
 class CarryPair:
@@ -35,12 +35,17 @@ class Robot:
         self.inbox = []
 
         # Communication and coordination
-        self.clk = LamportClock()
-        self.known_team_positions: Dict[int, Tuple[Tuple[int, int], int]] = {}
-        self.POS_TTL_TICKS: int = 5
-        self.CONS_TTL_TICKS: int = 15
+        self.clock = LamportClock()
+        self.known_team_positions: dict[int, tuple[tuple[int, int], int]] = {}  # rid -> ((x,y), last_seen_tick)
+        self.POS_TTL_TICKS = 5  # only count peers seen 5 ticks ago
         self.last_beacon: int = -1
-        self.consensus: Dict[Tuple[int,int], Dict[str, any]] = {}
+        # Paxos book-keeping per cell
+        # consensus[cell] = {
+        #   "n": int, "decided": list[int]|None,
+        #   "last_proposer_id": int|None, "last_proposer_tick": int,
+        #   "updated_at": int
+        # }
+        self.consensus: dict[tuple[int, int], dict] = {}
         self.acceptor = Acceptor(self.id)
         self.proposer = Proposer(self.id, quorum=[])
         self.messages_sent_this_tick: List[dict] = []
@@ -58,7 +63,7 @@ class Robot:
 
     def send(self, now: int, dst: int, kind: str, payload: dict):
         """Send message to teammate."""
-        ts = self.clk.send()
+        ts = self.clock.send()
         msg = Msg(src=self.id, dst=dst, ts=ts, kind=kind, payload=payload)
         self.bus.send(now, msg)
 
@@ -103,26 +108,6 @@ class Robot:
         for rid in stale:
             self.known_team_positions.pop(rid, None)
 
-    def _touch_consensus(self, cell: Tuple[int, int], now: int, quorum: int) -> Dict[str, any]:
-        st = self.consensus.setdefault(cell, {"decided": None, "quorum": quorum, "proposed": None, "updated_at": now, "last_proposer_id": None, "last_proposer_tick": None})
-        st["quorum"] = quorum
-        st["updated_at"] = now
-        if "proposed" not in st or st.get("proposed") is None:
-            st["proposed"] = (None, None)
-        if "last_proposer_id" not in st:
-            st["last_proposer_id"] = None
-        if "last_proposer_tick" not in st:
-            st["last_proposer_tick"] = None
-        return st
-
-    def _prune_stale_consensus(self, now: int):
-        for cell in list(self.consensus.keys()):
-            st = self.consensus.get(cell)
-            if not st:
-                continue
-            last = st.get("updated_at", now)
-            if now - last > self.CONS_TTL_TICKS:
-                self.consensus.pop(cell, None)
 
     def enqueue_explore_soon(self, now: int):
         self.sched.add(Task(deadline=now + 2, release=now, name='explore'))
@@ -154,53 +139,50 @@ class Robot:
                 "requester_id": self.id
             })
 
-    def digest_inbox(self, now: int):
-        """Process messages; update Lamport; handle pos and Paxos."""
-        promises_buf: List[Tuple[Tuple[int,int], Promise]] = []
-
-        for m in self.inbox:
-            self.clk.recv(m.ts)
-
+    def digest_inbox(self, now: int, msgs: List[Msg]):
+        out_promises: List[Msg] = []
+        out_accepted: List[Msg] = []
+        for m in msgs:
+            self.clock.recv(m.ts)
             if m.kind == "pos":
                 pos = tuple(m.payload["pos"])
-                self._remember_teammate_position(m.src, pos, now)
-
-                # Share gold knowledge
+                self.known_team_positions[m.src] = (pos, now)
                 if "gold_locations" in m.payload:
                     for gold_pos in m.payload["gold_locations"]:
-                        if tuple(gold_pos) not in self.gold_locations:
-                            self.gold_locations.append(tuple(gold_pos))
-
+                        tup = tuple(gold_pos)
+                        if tup not in self.gold_locations:
+                            self.gold_locations.append(tup)
             elif m.kind == "help_request":
-                # Switch to HELPER role and head to gold location
-                gold_pos = tuple(m.payload["gold_pos"])
-                if not self.carry and self.role != "TRANSPORTER":
+                gold_pos = tuple(m.payload.get("gold_pos", ()))
+                if gold_pos and not self.carry and self.role != "TRANSPORTER":
                     self.role = "SUPPORTER"
                     self.target_gold = gold_pos
-                    # Add gold to our knowledge if not known
                     if gold_pos not in self.gold_locations:
                         self.gold_locations.append(gold_pos)
-
             elif m.kind == "paxos_prepare":
                 cell = tuple(m.payload["cell"])
-                pm = self.acceptor.on_prepare(m.payload["n"])
-                if pm:
-                    self.send(self.clk.t, m.src, "paxos_promise", {
+                ok, na, va = self.acceptor.on_prepare(m.payload["n"])
+                if ok:
+                    self.send(now, m.src, "paxos_promise", {
                         "cell": cell,
-                        "n": pm.n,
-                        "accepted_n": pm.accepted_n,
-                        "accepted_v": pm.accepted_v
+                        "n": m.payload["n"],
+                        "na": na,
+                        "va": va
                     })
-
             elif m.kind == "paxos_promise":
-                cell = tuple(m.payload["cell"])
-                promises_buf.append((cell, Promise(
-                    m.src, m.payload["n"],
-                    m.payload["accepted_n"], m.payload["accepted_v"]
-                )))
-
-        self.inbox.clear()
-        return promises_buf
+                out_promises.append(m)
+            elif m.kind == "paxos_accept":
+                ok = self.acceptor.on_accept(m.payload["n"], m.payload.get("v"))
+                if ok:
+                    self.send(now, m.src, "paxos_accepted", {
+                        "cell": tuple(m.payload["cell"]),
+                        "n": m.payload["n"],
+                        "v": m.payload.get("v")
+                    })
+            elif m.kind == "paxos_accepted":
+                out_accepted.append(m)
+        msgs.clear()
+        return out_promises, out_accepted
 
     def get_and_clear_sent_messages(self) -> List[dict]:
         """Get messages sent this tick and clear the buffer."""
@@ -245,7 +227,7 @@ class Robot:
                     'gold': cell_data['gold'],
                     'robots': robots_here.copy(),
                     'robots_with_facing': robots_with_facing.copy(),
-                    'last_seen': self.clk.t
+                    'last_seen': self.clock.t
                 }
 
                 # Update known positions for visible teammates
@@ -267,139 +249,121 @@ class Robot:
         return visible
 
     def peers_on_cell(self, now: int, cell: Tuple[int, int], team_ids: List[int]) -> List[int]:
-        """Get teammates whose fresh position equals cell (self included if present)."""
-        result: List[int] = []
-        if self.pos == cell:
-            result.append(self.id)
+        fresh: List[int] = []
         for rid in team_ids:
             if rid == self.id:
+                if self.pos == cell:
+                    fresh.append(rid)
                 continue
-            pos = self._get_teammate_position(rid, now)
-            if pos == cell:
-                result.append(rid)
-        return result
+            rec = self.known_team_positions.get(rid)
+            if not rec:
+                continue
+            pos, t_seen = rec
+            if pos == cell and (now - t_seen) <= self.POS_TTL_TICKS:
+                fresh.append(rid)
+        return sorted(fresh)
 
-    def try_consensus_pair(self, now: int, cell: Tuple[int,int], team_ids: List[int]) -> Optional[List[int]]:
-        """Start/continue Paxos consensus for gold pickup at cell."""
+
+
+    def try_consensus_pair(self, now: int, gw, team_ids: List[int]):
+        cell = self.pos
+        if gw.gold_at(cell) <= 0:
+            return
         peers = self.peers_on_cell(now, cell, team_ids)
         if len(peers) < 2:
-            return None
-
-        # Initialize/refresh consensus state
-        state = self._touch_consensus(cell, now, len(peers))
-        if state["decided"] is not None:
-            return state["decided"]
-
-        # Determine proposer (min ID with simple rotation if previous stalled)
+            return
+        st = self.consensus.setdefault(cell, {
+            "n": 0,
+            "decided": None,
+            "last_proposer_id": None,
+            "last_proposer_tick": -1,
+            "updated_at": now
+        })
+        st["updated_at"] = now
         proposer = peers[0]
-        last_id = state.get("last_proposer_id")
-        last_tick = state.get("last_proposer_tick")
-        if last_id in peers and last_tick is not None and last_tick == (now - 1) and not state.get("decided"):
-            idx = peers.index(last_id)
-            proposer = peers[(idx + 1) % len(peers)]
+        if st["last_proposer_tick"] == (now - 1) and not st["decided"]:
+            last = st["last_proposer_id"] or proposer
+            if last in peers:
+                proposer = peers[(peers.index(last) + 1) % len(peers)]
+        if self.id != proposer or st["decided"]:
+            return
+        st["last_proposer_id"] = self.id
+        st["last_proposer_tick"] = now
+        st["n"] = self.proposer.next_n()
+        cand = peers[:2]
+        for rid in peers:
+            self.send(now, rid, "paxos_prepare", {"cell": cell, "n": st["n"], "pair": cand})
 
-        if self.id == proposer and state.get("decided") is None:
-            pair = sorted(peers)[:2]  # Propose two lowest IDs
-            n = self.proposer.next_n()
-
-            # Send prepare to all peers on cell
-            for p in peers:
-                self.send(now, p, "paxos_prepare", {
-                    "cell": cell,
-                    "n": n,
-                    "pair": pair
-                })
-
-            # Store pending proposal and proposer info
-            state["proposed"] = (n, pair)
-            state["last_proposer_id"] = self.id
-            state["last_proposer_tick"] = now
-
-        return None
-
-    def integrate_promises(self, now: int, team_ids: List[int],
-                           promises: List[Tuple[Tuple[int,int], Promise]]):
-        """Process Paxos promises and decide on carrying pairs when quorum reached."""
-        # Group by cell
-        by_cell_prom = {}
-        for cell, pm in promises:
-            by_cell_prom.setdefault(cell, []).append(pm)
-
-        # Handle promises
-        for cell, pms in by_cell_prom.items():
-            st = self._touch_consensus(cell, now, len(team_ids))
-            if st["decided"] is not None:
+    def integrate_promises_and_accepts(self, now: int, promises: List[Msg], accepted: List[Msg], team_ids: List[int]):
+        by_cell: Dict[Tuple[int, int], List[Msg]] = {}
+        for m in promises:
+            cell = tuple(m.payload["cell"])
+            by_cell.setdefault(cell, []).append(m)
+        for cell, msgs in by_cell.items():
+            st = self.consensus.get(cell)
+            if not st or st.get("decided"):
                 continue
+            peers = self.peers_on_cell(now, cell, team_ids)
+            quorum = len(peers) // 2 + 1
+            eligible = [m for m in msgs if m.payload.get("n") == st.get("n") and m.src in peers]
+            if len({m.src for m in eligible}) < quorum:
+                continue
+            na_max = -1
+            value = None
+            for m in eligible:
+                na = m.payload.get("na", -1)
+                va = m.payload.get("va")
+                if va is not None and na > na_max:
+                    na_max = na
+                    value = va
+            if value is None:
+                value = peers[:2]
+            for rid in peers:
+                self.send(now, rid, "paxos_accept", {"cell": cell, "n": st["n"], "v": value})
+            st["updated_at"] = now
+        by_cell_accepted: Dict[Tuple[int, int], List[Msg]] = {}
+        for m in accepted:
+            cell = tuple(m.payload["cell"])
+            by_cell_accepted.setdefault(cell, []).append(m)
+        for cell, msgs in by_cell_accepted.items():
+            st = self.consensus.get(cell)
+            if not st or st.get("decided"):
+                continue
+            peers = self.peers_on_cell(now, cell, team_ids)
+            quorum = len(peers) // 2 + 1
+            eligible = [m for m in msgs if m.payload.get("n") == st.get("n") and m.src in peers]
+            if len({m.src for m in eligible}) < quorum:
+                continue
+            st["decided"] = eligible[0].payload.get("v")
+            st["updated_at"] = now
 
-            # Find highest previously accepted value
-            highest = (-1, None)
-            for pm in pms:
-                if pm.accepted_n > highest[0]:
-                    highest = (pm.accepted_n, pm.accepted_v)
 
-            # Check if we have quorum of promises
-            quorum = st["quorum"]
-            if len(pms) >= (quorum//2 + 1):
-                # Pick value: highest accepted or our proposed
-                proposal_data = st.get("proposed", (None, None))
-                n, proposed_pair = proposal_data
-                v = highest[1] if highest[0] != -1 else proposed_pair
 
-                if n is not None and v is not None:
-                    st["decided"] = v
-                    st["updated_at"] = now
-
-    def plan(self, now, gw, team_ids: List[int]):
-        """
-        Schedule tasks for the robot based on its current state and environment.
-        """
+    def plan(self, now: int, gw, team_ids: List[int]):
         self.tick_now = now
         self._prune_stale_positions(now)
-        self._prune_stale_consensus(now)
-        # Only add tasks if they don't already exist for current time window
-        has_sense = any(t.name == 'sense' and t.release >= now for t in self.sched.h)
-        has_to_deposit = any(t.name == 'to_deposit' and t.release >= now for t in self.sched.h)
-        has_explore = any(t.name == 'explore' and t.release >= now for t in self.sched.h)
-
-        if not has_sense:
-            # Make sure we communicate every tick or so
-            self.sched.add(Task(deadline=now + 1, release=now, name='sense'))
-
-        cell = self.pos
-        decided = self.consensus.get(cell, {}).get('decided')
-        is_decided_member = decided is not None and self.id in decided
-
+        self.gc_consensus(now)
+        self.sched.add(Task(deadline=now + 1, release=now, name="sense"))
         if self.carry:
-            if not has_to_deposit:
-                self.sched.add(Task(deadline=now + 1, release=now, name='to_deposit'))
+            self.sched.add(Task(deadline=now + 1, release=now, name="to_deposit"))
         else:
-            if not is_decided_member and not has_explore:
-                self.sched.add(Task(deadline=now + 3, release=now, name='explore'))
-            if not is_decided_member and (now - self.last_moved_tick) >= 5:
-                print(f"[WATCHDOG] R{self.id} nudge at t={now}")
-                self.rotate_right()
-                self.last_moved_tick = now
-                self.sched.add(Task(deadline=now + 1, release=now, name='explore'))
+            cell = self.pos
+            gold_here = gw.gold_at(cell)
+            decided = self.consensus.get(cell, {}).get("decided")
+            if gold_here > 0:
+                if decided and self.id in decided:
+                    self.sched.add(Task(deadline=now + 1, release=now, name="coordinate"))
+                else:
+                    self.sched.add(Task(deadline=now + 1, release=now, name="pair_consensus"))
+            if not (decided and self.id in decided):
+                self.sched.add(Task(deadline=now + 3, release=now, name="explore"))
 
-        # If gold is present at current position, coordinate with others
-        if gw.cells[cell[1]][cell[0]]['gold'] > 0:
-            # Request help from teammates if we haven't already
-            if self.role == "SCOUT" and cell not in [t[1] for t in [(None, cell)] if self.consensus.get(cell)]:
-                self.request_help(now, team_ids, cell)
-                self.role = "SCOUT"  # Stay as scout until pair forms
+    def gc_consensus(self, now: int):
+        CONS_TTL = 15
+        for cell, st in list(self.consensus.items()):
+            if (now - st.get("updated_at", now)) > CONS_TTL:
+                del self.consensus[cell]
 
-            decided = self.consensus.get(cell, {}).get('decided')
-            is_decided_member = decided is not None and self.id in decided
-            has_consensus = any(t.name == 'pair_consensus' and t.release >= now for t in self.sched.h)
-            has_coordinate = any(t.name == 'coordinate' and t.release >= now for t in self.sched.h)
-
-            if decided is None and not has_consensus:
-                # High priority for consensus
-                self.sched.add(Task(deadline=now + 1, release=now, name='pair_consensus'))
-            elif decided is not None and self.id in decided and not has_coordinate:
-                # If we are part of decided pair, declare pickup intent and switch to TRANSPORTER
-                self.role = "TRANSPORTER"
-                self.sched.add(Task(deadline=now + 1, release=now, name='coordinate'))
 
     def rotate_right(self):
         """
@@ -526,7 +490,7 @@ class Robot:
             available_teammates = [tid for tid, (pos, seen) in self.known_team_positions.items()
                                  if tid != self.id and (self.tick_now - seen) <= self.POS_TTL_TICKS and not hasattr(self, '_help_requested')]
             if available_teammates:
-                self.request_help(self.clk.t, available_teammates, self.pos)
+                self.request_help(self.clock.t, available_teammates, self.pos)
                 self._help_requested = True
                 self._help_wait_counter = 0
                 self.rotate_right()
@@ -691,7 +655,6 @@ class Robot:
                 self._move_to(nx)
                 return want
         return None
-
 
 
 

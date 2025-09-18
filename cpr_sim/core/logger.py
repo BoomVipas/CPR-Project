@@ -148,7 +148,8 @@ class SimulationLogger:
                     self.log_file.write(f" [cell={payload['cell']}, n={payload['n']}, pair={payload.get('pair', 'N/A')}]")
                 elif msg['kind'] == 'paxos_promise':
                     payload = msg['payload']
-                    self.log_file.write(f" [cell={payload['cell']}, n={payload['n']}, accepted_n={payload['accepted_n']}]")
+                    accepted_n = payload.get('accepted_n', payload.get('na', 'N/A'))
+                    self.log_file.write(f" [cell={payload['cell']}, n={payload['n']}, accepted_n={accepted_n}]")
                 else:
                     # For any other message types, show the raw payload
                     payload = msg.get('payload', {})

@@ -1,14 +1,4 @@
-from dataclasses import dataclass
-from typing import Optional, List
-
-
-@dataclass
-class Promise:
-    """Promise response in Paxos protocol."""
-    acceptor_id: int
-    n: int
-    accepted_n: int
-    accepted_v: Optional[List[int]]
+from typing import List, Optional, Tuple
 
 
 class Acceptor:
@@ -18,19 +8,23 @@ class Acceptor:
         self.node_id = node_id
         self.promised_n = -1
         self.accepted_n = -1
-        self.accepted_v = None
+        self.accepted_v: Optional[List[int]] = None
 
-    def on_prepare(self, n: int) -> Optional[Promise]:
+    def on_prepare(self, n: int) -> Tuple[bool, int, Optional[List[int]]]:
         """Handle prepare request."""
         if n > self.promised_n:
             self.promised_n = n
-            return Promise(
-                acceptor_id=self.node_id,
-                n=n,
-                accepted_n=self.accepted_n,
-                accepted_v=self.accepted_v
-            )
-        return None
+            return True, self.accepted_n, self.accepted_v
+        return False, self.accepted_n, self.accepted_v
+
+    def on_accept(self, n: int, v: Optional[List[int]]) -> bool:
+        """Handle accept request."""
+        if n >= self.promised_n:
+            self.promised_n = n
+            self.accepted_n = n
+            self.accepted_v = v
+            return True
+        return False
 
 
 class Proposer:

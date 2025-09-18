@@ -78,6 +78,7 @@ class Simulation:
 
         # Step 3: Communication Phase - process sense tasks and messages
         promises = []
+        accepted = []
 
         for r in self.robots:
             # Process sense tasks first to handle communication
@@ -89,8 +90,9 @@ class Simulation:
 
             if sense_task:
                 r.sched.h.remove(sense_task)
-                pr = r.digest_inbox(self.t)
+                pr, acc = r.digest_inbox(self.t, r.inbox)
                 promises.extend(pr)
+                accepted.extend(acc)
                 r.maybe_beacon(self.t, teamA if r.group == "A" else teamB)
 
         # Step 4: Consensus Phase - handle consensus-related tasks
@@ -103,12 +105,13 @@ class Simulation:
 
             if consensus_task:
                 r.sched.h.remove(consensus_task)
-                r.try_consensus_pair(self.t, r.pos, teamA if r.group == "A" else teamB)
+                r.try_consensus_pair(self.t, self.gw, teamA if r.group == "A" else teamB)
 
         # Integrate Paxos messages after all robots have processed communication
         for r in self.robots:
-            r.integrate_promises(self.t, teamA if r.group == "A" else teamB,
-                                 promises)
+            r.integrate_promises_and_accepts(
+                self.t, promises, accepted, teamA if r.group == "A" else teamB
+            )
 
         # Step 5: Coordination Phase - handle coordinate tasks
         intentsA: Dict[Tuple[int,int], List[int]] = {}

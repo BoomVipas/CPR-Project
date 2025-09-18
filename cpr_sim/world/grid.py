@@ -29,3 +29,9 @@ class GridWorld:
     def inb(self, p):
         """Check if position p is within grid bounds."""
         return 0 <= p[0] < self.size and 0 <= p[1] < self.size
+
+    def gold_at(self, pos):
+        """Return gold count at position pos (0 if out of bounds)."""
+        if not self.inb(pos):
+            return 0
+        return self.cells[pos[1]][pos[0]]['gold']
