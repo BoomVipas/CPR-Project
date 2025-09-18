@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import random
+import heapq
 
 from .world.grid import GridWorld
 from .world.render import render_ascii
@@ -240,29 +241,38 @@ class Simulation:
                 else:
                     self.scoreB += gold_deposited
                     self.logger.log_gold_deposit('B', [r.id, mate.id], gold_deposited, self.scoreB)
-                r.carry = None
-                mate.carry = None
-
-                # Reset robots back to SCOUT role after successful deposit
-                r.role = "SCOUT"
-                mate.role = "SCOUT"
-                r.target_gold = None
-                mate.target_gold = None
-
-                # Clear any help request state
-                if hasattr(r, '_help_requested'):
-                    delattr(r, '_help_requested')
-                if hasattr(mate, '_help_requested'):
-                    delattr(mate, '_help_requested')
-                if hasattr(r, '_help_wait_counter'):
-                    delattr(r, '_help_wait_counter')
-                if hasattr(mate, '_help_wait_counter'):
-                    delattr(mate, '_help_wait_counter')
+                self.clear_pair(r, mate)
 
         # Log actions taken this tick
         self.logger.log_actions(planned_moves, intentsA, intentsB)
 
         self.t += 1
+
+    def clear_pair(self, r1, r2):
+        """Fully reset a carrying pair after deposit."""
+        for r in (r1, r2):
+            r.carry = None
+            if hasattr(r, 'carry_pair'):
+                r.carry_pair = None
+            r.role = "SCOUT"
+            r.target_gold = None
+            if hasattr(r, '_help_requested'):
+                delattr(r, '_help_requested')
+            if hasattr(r, '_help_wait_counter'):
+                delattr(r, '_help_wait_counter')
+            if hasattr(r, 'consensus'):
+                cells = list(r.consensus.keys())
+                for cell in cells:
+                    st = r.consensus.get(cell)
+                    if not st or st.get('decided') is None or r.id in st.get('decided', []):
+                        r.consensus.pop(cell, None)
+            if hasattr(r, 'sched'):
+                r.sched.h = [task for task in r.sched.h if task.name != 'to_deposit']
+                heapq.heapify(r.sched.h)
+            if hasattr(r, 'enqueue_explore_soon'):
+                r.enqueue_explore_soon(self.t)
+        if hasattr(self.logger, 'log_pair_cleared'):
+            self.logger.log_pair_cleared([r1.id, r2.id], self.t)
 
     def resolve_pickups(self, intentsA, intentsB):
         all_cells = set(intentsA.keys()) | set(intentsB.keys())
@@ -315,8 +325,8 @@ class Simulation:
 
         current_separation = abs(r1.pos[0] - r2.pos[0]) + abs(r1.pos[1] - r2.pos[1])
 
-        r1_orig = r1.pos
-        r2_orig = r2.pos
+        r1_state = (r1.pos, getattr(r1, 'last_pos', r1.pos), getattr(r1, 'last_moved_tick', 0))
+        r2_state = (r2.pos, getattr(r2, 'last_pos', r2.pos), getattr(r2, 'last_moved_tick', 0))
 
         r1_move = r1.step_to_deposit(self.gw)
         r1_after = r1.pos
@@ -329,13 +339,13 @@ class Simulation:
         def revert_r1():
             nonlocal r1_move
             if r1_moved:
-                r1.pos = r1_orig
+                r1.pos, r1.last_pos, r1.last_moved_tick = r1_state
             r1_move = None
 
         def revert_r2():
             nonlocal r2_move
             if r2_moved:
-                r2.pos = r2_orig
+                r2.pos, r2.last_pos, r2.last_moved_tick = r2_state
             r2_move = None
 
         if r1_move and r1_move in DIRS and r2_move and r2_move in DIRS:
@@ -414,8 +424,12 @@ class Simulation:
                 if self.cfg.sleep_sec > 0:
                     time.sleep(self.cfg.sleep_sec)
 
-        print(f"\n🏆 Final Score: Team A = {self.scoreA}, Team B = {self.scoreB}")
+        print(f"\nFinal Score: Team A = {self.scoreA}, Team B = {self.scoreB}")
 
         # Close log file
         self.logger.log_simulation_end(self.scoreA, self.scoreB, self.gw, self.robots, self.t)
         self.logger.close()
+
+
+
+

@@ -38,6 +38,7 @@ class Robot:
         self.clk = LamportClock()
         self.known_team_positions: Dict[int, Tuple[Tuple[int, int], int]] = {}
         self.POS_TTL_TICKS: int = 5
+        self.CONS_TTL_TICKS: int = 15
         self.last_beacon: int = -1
         self.consensus: Dict[Tuple[int,int], Dict[str, any]] = {}
         self.acceptor = Acceptor(self.id)
@@ -52,6 +53,8 @@ class Robot:
         self.target_gold: Optional[Tuple[int,int]] = None
         self.wander_dir: Optional[str] = None
         self.wander_steps: int = 0
+        self.last_pos: Tuple[int, int] = self.pos
+        self.last_moved_tick: int = 0
 
     def send(self, now: int, dst: int, kind: str, payload: dict):
         """Send message to teammate."""
@@ -99,6 +102,30 @@ class Robot:
         stale = [rid for rid, (_, seen) in self.known_team_positions.items() if now - seen > self.POS_TTL_TICKS]
         for rid in stale:
             self.known_team_positions.pop(rid, None)
+
+    def _touch_consensus(self, cell: Tuple[int, int], now: int, quorum: int) -> Dict[str, any]:
+        st = self.consensus.setdefault(cell, {"decided": None, "quorum": quorum, "proposed": None, "updated_at": now, "last_proposer_id": None, "last_proposer_tick": None})
+        st["quorum"] = quorum
+        st["updated_at"] = now
+        if "proposed" not in st or st.get("proposed") is None:
+            st["proposed"] = (None, None)
+        if "last_proposer_id" not in st:
+            st["last_proposer_id"] = None
+        if "last_proposer_tick" not in st:
+            st["last_proposer_tick"] = None
+        return st
+
+    def _prune_stale_consensus(self, now: int):
+        for cell in list(self.consensus.keys()):
+            st = self.consensus.get(cell)
+            if not st:
+                continue
+            last = st.get("updated_at", now)
+            if now - last > self.CONS_TTL_TICKS:
+                self.consensus.pop(cell, None)
+
+    def enqueue_explore_soon(self, now: int):
+        self.sched.add(Task(deadline=now + 2, release=now, name='explore'))
 
     def request_help(self, now: int, teammates: List[int], gold_pos: Tuple[int,int]):
         """Request help from closest teammate for gold pickup."""
@@ -258,16 +285,20 @@ class Robot:
         if len(peers) < 2:
             return None
 
-        # Initialize local state
-        state = self.consensus.setdefault(cell, {"decided": None, "quorum": len(peers)})
+        # Initialize/refresh consensus state
+        state = self._touch_consensus(cell, now, len(peers))
         if state["decided"] is not None:
             return state["decided"]
 
-        # Update quorum dynamically
-        state["quorum"] = len(peers)
+        # Determine proposer (min ID with simple rotation if previous stalled)
+        proposer = peers[0]
+        last_id = state.get("last_proposer_id")
+        last_tick = state.get("last_proposer_tick")
+        if last_id in peers and last_tick is not None and last_tick == (now - 1) and not state.get("decided"):
+            idx = peers.index(last_id)
+            proposer = peers[(idx + 1) % len(peers)]
 
-        # Only smallest-ID among peers proposes (reduce traffic)
-        if self.id == min(peers):
+        if self.id == proposer and state.get("decided") is None:
             pair = sorted(peers)[:2]  # Propose two lowest IDs
             n = self.proposer.next_n()
 
@@ -279,8 +310,10 @@ class Robot:
                     "pair": pair
                 })
 
-            # Store pending proposal
+            # Store pending proposal and proposer info
             state["proposed"] = (n, pair)
+            state["last_proposer_id"] = self.id
+            state["last_proposer_tick"] = now
 
         return None
 
@@ -294,7 +327,7 @@ class Robot:
 
         # Handle promises
         for cell, pms in by_cell_prom.items():
-            st = self.consensus.setdefault(cell, {"decided": None, "quorum": len(team_ids)})
+            st = self._touch_consensus(cell, now, len(team_ids))
             if st["decided"] is not None:
                 continue
 
@@ -314,6 +347,7 @@ class Robot:
 
                 if n is not None and v is not None:
                     st["decided"] = v
+                    st["updated_at"] = now
 
     def plan(self, now, gw, team_ids: List[int]):
         """
@@ -321,29 +355,41 @@ class Robot:
         """
         self.tick_now = now
         self._prune_stale_positions(now)
+        self._prune_stale_consensus(now)
         # Only add tasks if they don't already exist for current time window
         has_sense = any(t.name == 'sense' and t.release >= now for t in self.sched.h)
-        has_movement = any(t.name in ['explore', 'to_deposit'] and t.release >= now for t in self.sched.h)
+        has_to_deposit = any(t.name == 'to_deposit' and t.release >= now for t in self.sched.h)
+        has_explore = any(t.name == 'explore' and t.release >= now for t in self.sched.h)
 
         if not has_sense:
-            # Communication task every few steps
-            self.sched.add(Task(deadline=now + 5, release=now + (now % 3), name='sense'))
+            # Make sure we communicate every tick or so
+            self.sched.add(Task(deadline=now + 1, release=now, name='sense'))
 
-        if self.carry and not has_movement:
-            self.sched.add(Task(deadline=now + 1, release=now, name='to_deposit'))
-        elif not self.carry and not has_movement:
-            self.sched.add(Task(deadline=now + 6, release=now, name='explore'))
+        cell = self.pos
+        decided = self.consensus.get(cell, {}).get('decided')
+        is_decided_member = decided is not None and self.id in decided
+
+        if self.carry:
+            if not has_to_deposit:
+                self.sched.add(Task(deadline=now + 1, release=now, name='to_deposit'))
+        else:
+            if not is_decided_member and not has_explore:
+                self.sched.add(Task(deadline=now + 3, release=now, name='explore'))
+            if not is_decided_member and (now - self.last_moved_tick) >= 5:
+                print(f"[WATCHDOG] R{self.id} nudge at t={now}")
+                self.rotate_right()
+                self.last_moved_tick = now
+                self.sched.add(Task(deadline=now + 1, release=now, name='explore'))
 
         # If gold is present at current position, coordinate with others
-        if gw.cells[self.pos[1]][self.pos[0]]['gold'] > 0:
-            cell = self.pos
-
+        if gw.cells[cell[1]][cell[0]]['gold'] > 0:
             # Request help from teammates if we haven't already
             if self.role == "SCOUT" and cell not in [t[1] for t in [(None, cell)] if self.consensus.get(cell)]:
                 self.request_help(now, team_ids, cell)
                 self.role = "SCOUT"  # Stay as scout until pair forms
 
-            decided = self.consensus.get(cell, {}).get("decided")
+            decided = self.consensus.get(cell, {}).get('decided')
+            is_decided_member = decided is not None and self.id in decided
             has_consensus = any(t.name == 'pair_consensus' and t.release >= now for t in self.sched.h)
             has_coordinate = any(t.name == 'coordinate' and t.release >= now for t in self.sched.h)
 
@@ -397,6 +443,14 @@ class Robot:
         else:
             self.rotate_right()  # fallback
 
+    def _move_to(self, dest: Tuple[int, int], record: bool = True):
+        if record and dest != self.pos:
+            self.last_pos = self.pos
+            self.pos = dest
+            self.last_moved_tick = self.tick_now
+        else:
+            self.pos = dest
+
     def step_explore(self, gw, all_robots=None):
         """
         Intelligent exploration with gold-seeking behavior.
@@ -442,7 +496,7 @@ class Robot:
                         if self.facing != d:
                             self._face_direction(d)
                             return 'rot'
-                        self.pos = nx
+                        self._move_to(nx)
                         return 'move'
                 self.rotate_right()
                 return 'rot'
@@ -504,7 +558,7 @@ class Robot:
             elif want_dir:
                 nx = addv(self.pos, DIRS[want_dir])
                 if gw.inb(nx):
-                    self.pos = nx
+                    self._move_to(nx)
                     return 'move'
 
         # PRIORITY 2: If we know about gold locations, head towards the nearest one
@@ -528,7 +582,7 @@ class Robot:
             elif want_dir:
                 nx = addv(self.pos, DIRS[want_dir])
                 if gw.inb(nx):
-                    self.pos = nx
+                    self._move_to(nx)
                     return 'move'
 
         # Enhanced random exploration - avoid backtracking and prefer unexplored areas
@@ -554,7 +608,7 @@ class Robot:
             elif want_dir:
                 nx = addv(self.pos, DIRS[want_dir])
                 if gw.inb(nx):
-                    self.pos = nx
+                    self._move_to(nx)
                     return 'move'
 
         # Directed wandering to keep covering new territory
@@ -576,7 +630,7 @@ class Robot:
                     return 'rot'
                 nx = addv(self.pos, DIRS[self.wander_dir])
                 if gw.inb(nx):
-                    self.pos = nx
+                    self._move_to(nx)
                     self.wander_steps -= 1
                     return 'move'
                 self.wander_dir = None
@@ -586,7 +640,7 @@ class Robot:
         if self.rng.random() < 0.7:  # Higher chance to move forward
             nx = addv(self.pos, DIRS[self.facing])
             if gw.inb(nx):
-                self.pos = nx
+                self._move_to(nx)
                 return 'move'
 
         # Smart rotation - prefer turning towards center or unexplored areas
@@ -634,8 +688,10 @@ class Robot:
         if want:
             nx = addv(self.pos, DIRS[want])
             if gw.inb(nx):
-                self.pos = nx
+                self._move_to(nx)
                 return want
         return None
+
+
 
 
