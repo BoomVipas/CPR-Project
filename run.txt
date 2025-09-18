@@ -1,0 +1,7 @@
+let’s make the logs feel like an animated terminal sim (optional clear-screen redraw + controllable delay), without adding any dependencies.
+
+# fast stream (no delay, no screen clear)
+python main.py --ticks 60 --seed 123 --gold 25 --print_every 1
+
+# smooth animation at ~5 FPS (0.2s per frame) with clear-screen redraw
+python3 main.py --ticks 200 --seed 123 --gold 25 --sleep-sec 0.1 --animate
