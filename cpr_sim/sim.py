@@ -14,7 +14,7 @@ from .core.logger import SimulationLogger
 class Config:
     ticks: int = 100   # Shorter for watching
     seed: int = 123
-    gold: int = 3     # Less gold for easier watching
+    gold: int = 10     # Less gold for easier watching
     print_every: int = 1
     log_file: str = "simulation_log.txt"
     detailed_log: bool = True
@@ -88,7 +88,7 @@ class Simulation:
 
             if sense_task:
                 r.sched.h.remove(sense_task)
-                pr = r.digest_inbox()
+                pr = r.digest_inbox(self.t)
                 promises.extend(pr)
                 r.maybe_beacon(self.t, teamA if r.group == "A" else teamB)
 

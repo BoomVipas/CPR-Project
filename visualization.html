@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CPR Simulation Grid Viewer</title>
+<style>
+    :root {
+        --cell-size: 32px;
+        --grid-border: #ced4e0;
+        --grid-line: #e3e7f2;
+        --bg: #f4f6fb;
+        --panel-bg: #ffffff;
+        --panel-border: #d8deed;
+        --text-primary: #1d2333;
+        --text-muted: #6f7787;
+        --group-a: #1f77b4;
+        --group-b: #d62728;
+        --gold: #ffd166;
+        --deposit: #6c757d;
+        --transporter-ring: #0f172a;
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text-primary);
+    }
+    h1 {
+        margin: 0 0 12px;
+        font-size: 1.8rem;
+    }
+    p { margin: 6px 0; }
+    a { color: var(--group-a); }
+    #statusMessage {
+        margin: 8px 0 18px;
+        font-style: italic;
+        color: var(--text-muted);
+    }
+    input[type="file"] {
+        margin-bottom: 10px;
+    }
+    #viewer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 20px;
+    }
+    #leftColumn {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+    #gridPanel {
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        padding: 14px;
+        box-shadow: 0 2px 6px rgba(58, 64, 79, 0.08);
+    }
+    #gridHeader {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+    #gridHeader h2 {
+        margin: 0;
+        font-size: 1.2rem;
+    }
+    #gridBoard {
+        width: calc(var(--cell-size) * 20 + 2px);
+        height: calc(var(--cell-size) * 20 + 2px);
+        border: 2px solid var(--grid-border);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    #gridBoard-inner {
+        display: grid;
+        grid-template-columns: repeat(20, var(--cell-size));
+        grid-template-rows: repeat(20, var(--cell-size));
+        width: calc(var(--cell-size) * 20);
+        height: calc(var(--cell-size) * 20);
+        background: #fff;
+    }
+    .cell {
+        position: relative;
+        width: var(--cell-size);
+        height: var(--cell-size);
+        border-right: 1px solid var(--grid-line);
+        border-bottom: 1px solid var(--grid-line);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.7rem;
+        color: var(--text-muted);
+    }
+    .cell:nth-child(20n) {
+        border-right: none;
+    }
+    .cell:nth-last-child(-n+20) {
+        border-bottom: none;
+    }
+    .cell.deposit::after {
+        content: '';
+        position: absolute;
+        inset: 4px;
+        background: var(--deposit);
+        opacity: 0.35;
+        border-radius: 4px;
+    }
+    .gold-marker {
+        position: absolute;
+        width: 70%;
+        height: 70%;
+        background: var(--gold);
+        border-radius: 6px;
+        box-shadow: inset 0 -3px 0 rgba(0,0,0,0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.75rem;
+        font-weight: bold;
+        color: #8a5b08;
+    }
+    .robot {
+        position: absolute;
+        width: 58%;
+        height: 58%;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        font-size: 0.75rem;
+        font-weight: 600;
+        transition: transform 0.25s ease;
+    }
+    .robot.group-A { background: var(--group-a); }
+    .robot.group-B { background: var(--group-b); }
+    .robot.transporter {
+        box-shadow: 0 0 0 3px var(--panel-bg), 0 0 0 5px var(--transporter-ring);
+    }
+    .robot .arrow {
+        position: absolute;
+        width: 0;
+        height: 0;
+        border-style: solid;
+    }
+    .robot .arrow.N { border-width: 0 4px 6px 4px; border-color: transparent transparent #ff3b30 transparent; top: -6px; }
+    .robot .arrow.S { border-width: 6px 4px 0 4px; border-color: #ff3b30 transparent transparent transparent; bottom: -6px; }
+    .robot .arrow.E { border-width: 4px 0 4px 6px; border-color: transparent transparent transparent #ff3b30; right: -6px; }
+    .robot .arrow.W { border-width: 4px 6px 4px 0; border-color: transparent #ff3b30 transparent transparent; left: -6px; }
+    #rightColumn {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: 340px;
+    }
+    .panel {
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        padding: 14px;
+        box-shadow: 0 2px 6px rgba(58, 64, 79, 0.08);
+    }
+    .panel h2 {
+        margin: 0 0 10px;
+        font-size: 1.1rem;
+    }
+    #controlsRow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+    }
+    #stepSlider {
+        flex: 1;
+        min-width: 200px;
+    }
+    button, select {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--group-a);
+        background: var(--group-a);
+        color: #fff;
+        cursor: pointer;
+        font-size: 0.95rem;
+    }
+    button.secondary, select {
+        border: 1px solid #c0c7db;
+        background: #fff;
+        color: var(--text-primary);
+    }
+    button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.87rem;
+    }
+    th, td {
+        padding: 6px 4px;
+        border-bottom: 1px solid #eef1f7;
+        text-align: left;
+    }
+    th { background: #f1f4fb; font-weight: 600; }
+    tbody tr:hover { background: #f8f9fd; }
+    .flex-col { display: flex; flex-direction: column; gap: 6px; }
+    .legend {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+    .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .legend i {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    .legend .gold {
+        border-radius: 4px;
+        background: var(--gold);
+    }
+    .legend .deposit {
+        border-radius: 4px;
+        background: var(--deposit);
+    }
+    .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        background: #edf2ff;
+        border: 1px solid #c5d0ff;
+        color: #2c3a78;
+        margin-right: 6px;
+    }
+</style>
+</head>
+<body>
+<h1>CPR Simulation Grid Viewer</h1>
+<p>Load <code>simulation_log.txt</code> to replay robot movement on the 20?20 board with colored tokens and orientation arrows.</p>
+<input type="file" id="fileInput" accept=".txt">
+<div id="statusMessage">No log loaded.</div>
+<div id="viewer" style="display:none;">
+    <div id="leftColumn">
+        <div id="gridPanel">
+            <div id="gridHeader">
+                <h2>Grid</h2>
+                <div class="legend">
+                    <span><i style="background: var(--group-a);"></i>Group A</span>
+                    <span><i style="background: var(--group-b);"></i>Group B</span>
+                    <span><i class="gold"></i>Gold</span>
+                    <span><i class="deposit"></i>Deposit</span>
+                </div>
+            </div>
+            <div id="gridBoard">
+                <div id="gridBoard-inner"></div>
+            </div>
+        </div>
+        <div class="panel">
+            <div id="controlsRow">
+                <label for="stepSlider">Step:</label>
+                <input type="range" id="stepSlider" min="0" max="0" value="0">
+                <span id="stepLabel">0 / 0</span>
+                <button class="secondary" id="playPause">Play</button>
+                <label for="speedSelect">Speed:</label>
+                <select id="speedSelect">
+                    <option value="1200">1x</option>
+                    <option value="600">2x</option>
+                    <option value="300">4x</option>
+                    <option value="150">8x</option>
+                </select>
+            </div>
+            <div id="summary" class="flex-col"></div>
+        </div>
+    </div>
+    <div id="rightColumn">
+        <div class="panel" style="max-height: 320px; overflow:auto;">
+            <h2>Robots</h2>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>Group</th><th>Role</th><th>Pos</th><th>Facing</th></tr>
+                </thead>
+                <tbody id="robotTable"></tbody>
+            </table>
+        </div>
+        <div class="panel">
+            <h2>Gold</h2>
+            <div id="goldList" class="flex-col"></div>
+        </div>
+    </div>
+</div>
+<script>
+(function(){
+    const fileInput = document.getElementById('fileInput');
+    const statusMessage = document.getElementById('statusMessage');
+    const viewer = document.getElementById('viewer');
+    const stepSlider = document.getElementById('stepSlider');
+    const stepLabel = document.getElementById('stepLabel');
+    const playPause = document.getElementById('playPause');
+    const speedSelect = document.getElementById('speedSelect');
+    const gridInner = document.getElementById('gridBoard-inner');
+    const summaryDiv = document.getElementById('summary');
+    const robotTable = document.getElementById('robotTable');
+    const goldList = document.getElementById('goldList');
+
+    let gridSize = 20;
+    let deposits = {A: {x:0, y:0}, B: {x:19, y:19}};
+    let steps = [];
+    let animationTimer = null;
+    let cellMap = new Map();
+
+    fileInput.addEventListener('change', (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const text = e.target.result;
+            try {
+                steps = parseLog(text);
+                if (!steps.length) throw new Error('No steps found in log');
+                buildGrid(gridSize);
+                viewer.style.display = 'grid';
+                statusMessage.textContent = `${steps.length} steps loaded for grid ${gridSize}?${gridSize}.`;
+                stepSlider.max = steps.length - 1;
+                updateStep(0);
+            } catch (err) {
+                viewer.style.display = 'none';
+                statusMessage.textContent = `Failed to parse log: ${err.message}`;
+                console.error(err);
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    stepSlider.addEventListener('input', () => {
+        stopAnimation();
+        updateStep(Number(stepSlider.value));
+    });
+
+    playPause.addEventListener('click', () => {
+        if (animationTimer) {
+            stopAnimation();
+        } else {
+            startAnimation();
+        }
+    });
+
+    function startAnimation() {
+        playPause.textContent = 'Pause';
+        const speed = Number(speedSelect.value);
+        animationTimer = setInterval(() => {
+            let next = Number(stepSlider.value) + 1;
+            if (next >= steps.length) next = 0;
+            stepSlider.value = next;
+            updateStep(next, true);
+        }, speed);
+    }
+
+    function stopAnimation() {
+        if (animationTimer) {
+            clearInterval(animationTimer);
+            animationTimer = null;
+            playPause.textContent = 'Play';
+        }
+    }
+
+    function buildGrid(size) {
+        gridInner.innerHTML = '';
+        gridInner.style.gridTemplateColumns = `repeat(${size}, var(--cell-size))`;
+        gridInner.style.gridTemplateRows = `repeat(${size}, var(--cell-size))`;
+        cellMap = new Map();
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.x = x;
+                cell.dataset.y = y;
+                gridInner.appendChild(cell);
+                cellMap.set(`${x},${y}`, cell);
+            }
+        }
+    }
+
+    function updateStep(index, fromAuto = false) {
+        const step = steps[index];
+        stepSlider.value = index;
+        stepLabel.textContent = `${index} / ${steps.length - 1}`;
+        drawStep(step);
+        renderSummary(step);
+        renderRobotTable(step);
+        renderGold(step);
+    }
+
+    function renderSummary(step) {
+        summaryDiv.innerHTML = '';
+        const line1 = document.createElement('div');
+        line1.innerHTML = `<span class="badge">Step ${step.index}</span>` +
+            (step.score ? `Score A=${step.score.A} &nbsp; B=${step.score.B}` : 'Score unavailable');
+        summaryDiv.appendChild(line1);
+
+        const actions = document.createElement('div');
+        actions.innerHTML = `<strong>Actions:</strong> ${step.actions.length ? step.actions.join('; ') : 'None logged'}`;
+        summaryDiv.appendChild(actions);
+
+        const coords = document.createElement('div');
+        coords.innerHTML = `<strong>Coordination:</strong> ${step.coord.length ? step.coord.join('; ') : 'None logged'}`;
+        summaryDiv.appendChild(coords);
+    }
+
+    function renderRobotTable(step) {
+        robotTable.innerHTML = '';
+        const fragment = document.createDocumentFragment();
+        const sorted = [...step.robots].sort((a,b) => a.id - b.id);
+        for (const robot of sorted) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${robot.id}</td><td>${robot.group}</td><td>${robot.role}</td><td>(${robot.x}, ${robot.y})</td><td>${robot.facing}</td>`;
+            if (robot.details && robot.details.length) {
+                tr.title = robot.details.join('\n');
+            }
+            fragment.appendChild(tr);
+        }
+        robotTable.appendChild(fragment);
+    }
+
+    function renderGold(step) {
+        goldList.innerHTML = '';
+        if (!step.gold.length) {
+            goldList.textContent = 'No gold reported this step.';
+            return;
+        }
+        for (const gold of step.gold) {
+            const div = document.createElement('div');
+            div.textContent = `(${gold.x}, ${gold.y}) ?${gold.amount}`;
+            goldList.appendChild(div);
+        }
+    }
+
+    const offsetPatterns = [
+        {x: 0.5, y: 0.5},
+        {x: 0.2, y: 0.8},
+        {x: 0.8, y: 0.2},
+        {x: 0.8, y: 0.8},
+        {x: 0.2, y: 0.2},
+        {x: 0.5, y: 0.2},
+        {x: 0.2, y: 0.5},
+        {x: 0.8, y: 0.5},
+        {x: 0.5, y: 0.8}
+    ];
+
+    function drawStep(step) {
+        for (const cell of cellMap.values()) {
+            cell.innerHTML = '';
+            cell.classList.remove('deposit');
+        }
+        const depA = cellMap.get(`${deposits.A.x},${deposits.A.y}`);
+        const depB = cellMap.get(`${deposits.B.x},${deposits.B.y}`);
+        if (depA) depA.classList.add('deposit');
+        if (depB) depB.classList.add('deposit');
+
+        for (const gold of step.gold) {
+            const cell = cellMap.get(`${gold.x},${gold.y}`);
+            if (!cell) continue;
+            const marker = document.createElement('div');
+            marker.className = 'gold-marker';
+            marker.textContent = gold.amount;
+            cell.appendChild(marker);
+        }
+
+        const occupancy = new Map();
+        for (const robot of step.robots) {
+            const key = `${robot.x},${robot.y}`;
+            if (!occupancy.has(key)) occupancy.set(key, []);
+            occupancy.get(key).push(robot);
+        }
+
+        for (const [key, robots] of occupancy.entries()) {
+            const cell = cellMap.get(key);
+            if (!cell) continue;
+            robots.sort((a,b) => a.id - b.id);
+            robots.forEach((robot, idx) => {
+                const badge = document.createElement('div');
+                badge.className = 'robot';
+                badge.classList.add(`group-${robot.group}`);
+                if (robot.role === 'TRANSPORTER') badge.classList.add('transporter');
+                badge.textContent = robot.id;
+                const offset = offsetPatterns[idx] || {x: 0.5, y: 0.5};
+                badge.style.left = `${offset.x * 100}%`;
+                badge.style.top = `${offset.y * 100}%`;
+                badge.style.transform = 'translate(-50%, -50%)';
+                const tooltip = [`Robot ${robot.id} (Group ${robot.group})`, `Role: ${robot.role}`, `Facing: ${robot.facing}`];
+                if (robot.details && robot.details.length) tooltip.push(...robot.details);
+                badge.title = tooltip.join('\n');
+                const arrow = document.createElement('span');
+                arrow.className = `arrow ${robot.facing}`;
+                badge.appendChild(arrow);
+                cell.appendChild(badge);
+            });
+        }
+    }
+
+    function parseLog(text) {
+        gridSize = 20;
+        deposits = {A: {x: 0, y: 0}, B: {x: 19, y: 19}};
+
+        const sizeMatch = text.match(/Grid Size:\s*(\d+)x(\d+)/);
+        if (sizeMatch) {
+            gridSize = Number(sizeMatch[1]);
+        }
+        const depositMatch = text.match(/Deposit A:\s*\((\d+),\s*(\d+)\),\s*Deposit B:\s*\((\d+),\s*(\d+)\)/);
+        if (depositMatch) {
+            deposits = {
+                A: {x: Number(depositMatch[1]), y: Number(depositMatch[2])},
+                B: {x: Number(depositMatch[3]), y: Number(depositMatch[4])}
+            };
+        }
+
+        const stepRegex = /--- STEP\s+(\d+)\s+START ---([\s\S]*?)(?=--- STEP|=== SIMULATION COMPLETE ===|$)/g;
+        const steps = [];
+        let match;
+        while ((match = stepRegex.exec(text)) !== null) {
+            const stepIndex = Number(match[1]);
+            const block = match[2].trim();
+            const stepData = parseStepBlock(stepIndex, block);
+            steps.push(stepData);
+        }
+
+        const tailActions = text.match(/Actions taken:\s*([\s\S]*?)(?:Coordination attempts:|$)/);
+        const tailCoord = text.match(/Coordination attempts:\s*([\s\S]*?)(?:\n\n|$)/);
+        if (steps.length && tailActions) {
+            steps[steps.length - 1].actions = tailActions[1]
+                .split(/\n/)
+                .map(line => line.replace(/^\s*-?\s*/, '').trim())
+                .filter(Boolean);
+        }
+        if (steps.length && tailCoord) {
+            steps[steps.length - 1].coord = tailCoord[1]
+                .split(/\n/)
+                .map(line => line.replace(/^\s*-?\s*/, '').trim())
+                .filter(Boolean);
+        }
+
+        return steps;
+    }
+
+    function parseStepBlock(index, block) {
+        const lines = block.split('\n');
+        const robots = [];
+        const actions = [];
+        const coord = [];
+        let score = null;
+        let gold = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const raw = lines[i];
+            const line = raw.trim();
+            if (!line) continue;
+            if (line.startsWith('Current Score:')) {
+                const scoreMatch = line.match(/Current Score:\s*A=(\d+),\s*B=(\d+)/);
+                if (scoreMatch) score = {A: Number(scoreMatch[1]), B: Number(scoreMatch[2])};
+            } else if (line.startsWith('Gold on map')) {
+                let goldStr = line.substring(line.indexOf(':') + 1).trim();
+                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
+                    goldStr += ' ' + lines[++i].trim();
+                }
+                gold = parseGoldList(goldStr);
+            } else if (line.startsWith('Actions taken:')) {
+                const tail = line.replace('Actions taken:', '').trim();
+                if (tail) actions.push(tail);
+                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
+                    actions.push(lines[++i].trim());
+                }
+            } else if (line.startsWith('Coordination attempts:')) {
+                const tail = line.replace('Coordination attempts:', '').trim();
+                if (tail) coord.push(tail);
+                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
+                    coord.push(lines[++i].trim());
+                }
+            } else if (line.startsWith('Robot')) {
+                if (!line.includes('(Group')) {
+                    if (robots.length) {
+                        robots[robots.length - 1].details.push(line);
+                    } else {
+                        actions.push(line);
+                    }
+                    continue;
+                }
+                const robot = parseRobotLine(line);
+                if (!robot) {
+                    console.warn('Skipping unrecognized robot line:', line);
+                    continue;
+                }
+                const details = [];
+                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
+                    details.push(lines[++i].trim());
+                }
+                robot.details = details;
+                robots.push(robot);
+            }
+        }
+
+        return { index, score, gold, robots, actions, coord };
+    }
+
+    function parseGoldList(text) {
+        if (!text || text.toLowerCase().startsWith('none')) return [];
+        return text.split(',')
+            .map(entry => entry.trim())
+            .filter(Boolean)
+            .map(entry => {
+                const match = entry.match(/\((\d+),(\d+)\):G(\d+)/);
+                if (match) return {x: Number(match[1]), y: Number(match[2]), amount: Number(match[3])};
+                return null;
+            })
+            .filter(Boolean);
+    }
+
+    function parseRobotLine(line) {
+        const robotMatch = line.match(/Robot\s+(\d+)\s+\(Group\s+([AB])\):\s*pos=\(\s*(\d+),\s*(\d+)\)\s*facing=([NSEW])\s*\[(.*?)\](.*)/);
+        if (!robotMatch) {
+            return null;
+        }
+        const [, id, group, x, y, facing, roleRaw, extra] = robotMatch;
+        const role = roleRaw.trim();
+        const details = [];
+        if (extra && extra.trim()) details.push(extra.trim());
+        return {
+            id: Number(id),
+            group,
+            x: Number(x),
+            y: Number(y),
+            facing,
+            role,
+            details
+        };
+    }
+})();
+</script>
+</body>
+</html>

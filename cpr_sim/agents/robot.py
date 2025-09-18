@@ -36,18 +36,22 @@ class Robot:
 
         # Communication and coordination
         self.clk = LamportClock()
-        self.known_team_positions: Dict[int, Tuple[int,int]] = {}
+        self.known_team_positions: Dict[int, Tuple[Tuple[int, int], int]] = {}
+        self.POS_TTL_TICKS: int = 5
         self.last_beacon: int = -1
         self.consensus: Dict[Tuple[int,int], Dict[str, any]] = {}
         self.acceptor = Acceptor(self.id)
         self.proposer = Proposer(self.id, quorum=[])
         self.messages_sent_this_tick: List[dict] = []
+        self.tick_now: int = 0
 
         # Enhanced AI and knowledge base
         self.knowledge_base: Dict[Tuple[int,int], Dict[str, any]] = {}
         self.gold_locations: List[Tuple[int,int]] = []
         self.role = "SCOUT"  # SCOUT, SUPPORTER, TRANSPORTER
         self.target_gold: Optional[Tuple[int,int]] = None
+        self.wander_dir: Optional[str] = None
+        self.wander_steps: int = 0
 
     def send(self, now: int, dst: int, kind: str, payload: dict):
         """Send message to teammate."""
@@ -79,6 +83,23 @@ class Robot:
                     })
             self.last_beacon = now
 
+    def _remember_teammate_position(self, rid: int, pos: Tuple[int, int], now: int):
+        self.known_team_positions[rid] = (pos, now)
+
+    def _get_teammate_position(self, rid: int, now: int) -> Optional[Tuple[int, int]]:
+        data = self.known_team_positions.get(rid)
+        if not data:
+            return None
+        pos, seen = data
+        if now - seen > self.POS_TTL_TICKS:
+            return None
+        return pos
+
+    def _prune_stale_positions(self, now: int):
+        stale = [rid for rid, (_, seen) in self.known_team_positions.items() if now - seen > self.POS_TTL_TICKS]
+        for rid in stale:
+            self.known_team_positions.pop(rid, None)
+
     def request_help(self, now: int, teammates: List[int], gold_pos: Tuple[int,int]):
         """Request help from closest teammate for gold pickup."""
         if not teammates:
@@ -89,12 +110,15 @@ class Robot:
         min_distance = float('inf')
 
         for tid in teammates:
-            if tid != self.id and tid in self.known_team_positions:
-                teammate_pos = self.known_team_positions[tid]
-                distance = abs(teammate_pos[0] - self.pos[0]) + abs(teammate_pos[1] - self.pos[1])
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_teammate = tid
+            if tid == self.id:
+                continue
+            teammate_pos = self._get_teammate_position(tid, now)
+            if teammate_pos is None:
+                continue
+            distance = abs(teammate_pos[0] - self.pos[0]) + abs(teammate_pos[1] - self.pos[1])
+            if distance < min_distance:
+                min_distance = distance
+                closest_teammate = tid
 
         if closest_teammate:
             self.send(now, closest_teammate, "help_request", {
@@ -103,7 +127,7 @@ class Robot:
                 "requester_id": self.id
             })
 
-    def digest_inbox(self):
+    def digest_inbox(self, now: int):
         """Process messages; update Lamport; handle pos and Paxos."""
         promises_buf: List[Tuple[Tuple[int,int], Promise]] = []
 
@@ -111,7 +135,8 @@ class Robot:
             self.clk.recv(m.ts)
 
             if m.kind == "pos":
-                self.known_team_positions[m.src] = tuple(m.payload["pos"])
+                pos = tuple(m.payload["pos"])
+                self._remember_teammate_position(m.src, pos, now)
 
                 # Share gold knowledge
                 if "gold_locations" in m.payload:
@@ -198,7 +223,7 @@ class Robot:
 
                 # Update known positions for visible teammates
                 for robot_info in robots_with_facing:
-                    self.known_team_positions[robot_info['id']] = (nx, ny)
+                    self._remember_teammate_position(robot_info['id'], (nx, ny), self.tick_now)
 
                 # Track gold locations
                 if cell_data['gold'] > 0 and (nx, ny) not in self.gold_locations:
@@ -214,21 +239,22 @@ class Robot:
                 })
         return visible
 
-    def peers_on_cell(self, cell: Tuple[int,int], team_ids: List[int]) -> List[int]:
-        """Get teammates whose last known position equals cell (including self if at cell)."""
-        result = []
-        # Include self if we're at this cell
+    def peers_on_cell(self, now: int, cell: Tuple[int, int], team_ids: List[int]) -> List[int]:
+        """Get teammates whose fresh position equals cell (self included if present)."""
+        result: List[int] = []
         if self.pos == cell:
             result.append(self.id)
-        # Include teammates known to be at this cell
         for rid in team_ids:
-            if rid != self.id and self.known_team_positions.get(rid) == cell:
+            if rid == self.id:
+                continue
+            pos = self._get_teammate_position(rid, now)
+            if pos == cell:
                 result.append(rid)
         return result
 
     def try_consensus_pair(self, now: int, cell: Tuple[int,int], team_ids: List[int]) -> Optional[List[int]]:
         """Start/continue Paxos consensus for gold pickup at cell."""
-        peers = self.peers_on_cell(cell, team_ids)
+        peers = self.peers_on_cell(now, cell, team_ids)
         if len(peers) < 2:
             return None
 
@@ -293,6 +319,8 @@ class Robot:
         """
         Schedule tasks for the robot based on its current state and environment.
         """
+        self.tick_now = now
+        self._prune_stale_positions(now)
         # Only add tasks if they don't already exist for current time window
         has_sense = any(t.name == 'sense' and t.release >= now for t in self.sched.h)
         has_movement = any(t.name in ['explore', 'to_deposit'] and t.release >= now for t in self.sched.h)
@@ -373,6 +401,11 @@ class Robot:
         """
         Intelligent exploration with gold-seeking behavior.
         """
+        if self.role != "SCOUT":
+            self.wander_dir = None
+            self.wander_steps = 0
+
+
         # PRIORITY 0: If we're carrying gold, we should not be in explore mode - this is handled by to_deposit task
         if self.carry:
             # If we somehow end up in step_explore while carrying, just rotate (shouldn't happen)
@@ -389,10 +422,30 @@ class Robot:
             for cell in visible:
                 if cell['pos'] == self.pos and 'robots_with_facing' in cell:
                     for robot_info in cell['robots_with_facing']:
-                        self.known_team_positions[robot_info['id']] = self.pos
+                        self._remember_teammate_position(robot_info['id'], self.pos, self.tick_now)
 
-            teammates_at_gold = [rid for rid in self.known_team_positions
-                               if self.known_team_positions.get(rid) == self.pos and rid != self.id]
+            teammates_at_gold = [rid for rid, (pos, seen) in self.known_team_positions.items()
+                               if rid != self.id and pos == self.pos and (self.tick_now - seen) <= self.POS_TTL_TICKS]
+
+            # If more than two teammates are already here, non-essential scouts back off
+            present_ids = sorted({self.id} | set(teammates_at_gold))
+            if len(present_ids) > 2 and self.id not in present_ids[:2]:
+                if hasattr(self, '_help_requested'):
+                    delattr(self, '_help_requested')
+                if hasattr(self, '_help_wait_counter'):
+                    delattr(self, '_help_wait_counter')
+                dirs = list(DIR_ORDER)
+                self.rng.shuffle(dirs)
+                for d in dirs:
+                    nx = addv(self.pos, DIRS[d])
+                    if gw.inb(nx):
+                        if self.facing != d:
+                            self._face_direction(d)
+                            return 'rot'
+                        self.pos = nx
+                        return 'move'
+                self.rotate_right()
+                return 'rot'
 
             # If we have a teammate here, BOTH try to pick up gold!
             if len(teammates_at_gold) > 0:
@@ -416,11 +469,10 @@ class Robot:
                     delattr(self, '_help_wait_counter')
 
             # Request help from available teammates
-            available_teammates = [tid for tid in self.known_team_positions
-                                 if tid != self.id and not hasattr(self, '_help_requested')]
+            available_teammates = [tid for tid, (pos, seen) in self.known_team_positions.items()
+                                 if tid != self.id and (self.tick_now - seen) <= self.POS_TTL_TICKS and not hasattr(self, '_help_requested')]
             if available_teammates:
-                for tid in available_teammates:
-                    self.request_help(self.clk.t, [tid], self.pos)
+                self.request_help(self.clk.t, available_teammates, self.pos)
                 self._help_requested = True
                 self._help_wait_counter = 0
                 self.rotate_right()
@@ -505,6 +557,31 @@ class Robot:
                     self.pos = nx
                     return 'move'
 
+        # Directed wandering to keep covering new territory
+        if self.role == "SCOUT":
+            if self.wander_steps <= 0 or self.wander_dir is None:
+                dirs = list(DIR_ORDER)
+                self.rng.shuffle(dirs)
+                chosen = None
+                for d in dirs:
+                    nx = addv(self.pos, DIRS[d])
+                    if gw.inb(nx):
+                        chosen = d
+                        break
+                self.wander_dir = chosen
+                self.wander_steps = self.rng.randint(4, 8) if chosen else 0
+            if self.wander_dir:
+                if self.facing != self.wander_dir:
+                    self._face_direction(self.wander_dir)
+                    return 'rot'
+                nx = addv(self.pos, DIRS[self.wander_dir])
+                if gw.inb(nx):
+                    self.pos = nx
+                    self.wander_steps -= 1
+                    return 'move'
+                self.wander_dir = None
+                self.wander_steps = 0
+
         # Fallback to improved random exploration
         if self.rng.random() < 0.7:  # Higher chance to move forward
             nx = addv(self.pos, DIRS[self.facing])
@@ -560,3 +637,5 @@ class Robot:
                 self.pos = nx
                 return want
         return None
+
+
