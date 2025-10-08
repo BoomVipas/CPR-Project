@@ -1,6 +1,9 @@
-from typing import List, Dict, Tuple, Optional, TextIO
+from typing import List, Dict, Tuple, Optional, TextIO, TYPE_CHECKING, Set
 from ..agents.robot import Robot
 from ..world.render import render_ascii
+
+if TYPE_CHECKING:
+    from .consensus import PairBroker
 
 
 class SimulationLogger:
@@ -25,13 +28,16 @@ class SimulationLogger:
         self.log_file.write(f"Deposit A: {deposit_a}, Deposit B: {deposit_b}\n\n")
         self.log_file.flush()
 
-    def log_tick_start(self, step: int, score_a: int, score_b: int, robots: List[Robot], gw):
+    def log_tick_start(self, step: int, score_a: int, score_b: int, robots: List[Robot], gw, team_maps: Dict[str, Set[Tuple[int, int]]]):
         """Log the start of a new step with detailed robot states."""
         if not self.enabled or not self.log_file:
             return
 
         self.log_file.write(f"\n--- STEP {step:03d} START ---\n")
         self.log_file.write(f"Current Score: A={score_a}, B={score_b}\n")
+        if team_maps:
+            for team, visited in team_maps.items():
+                self.log_file.write(f"Visited cells team {team}: {len(visited)}\n")
 
         # Log gold locations and amounts
         gold_locations = []
@@ -99,31 +105,33 @@ class SimulationLogger:
         self.log_file.write("\n")
         self.log_file.flush()
 
-    def log_consensus_states(self, robots: List):
-        """Log current consensus states for debugging."""
+    def log_broker_states(self, brokers: Dict[Tuple[int, int], 'PairBroker']):
+        """Log outstanding broker offers and active pairs."""
         if not self.enabled or not self.log_file:
             return
 
-        active_consensus = False
-        for r in robots:
-            if r.consensus:
-                if not active_consensus:
-                    self.log_file.write("Active Consensus States:\n")
-                    active_consensus = True
+        any_entries = False
+        for cell, broker in brokers.items():
+            for team in ("A", "B"):
+                offers = broker.offers.get(team, {})
+                active = broker.active_pairs.get(team, [])
+                if not offers and not active:
+                    continue
+                if not any_entries:
+                    self.log_file.write("Pair broker states:\n")
+                    any_entries = True
+                offer_ids = sorted(offers.keys())
+                active_pairs = [
+                    f"{list(state.pair)}@{state.decided_at}{'/confirmed' if state.confirmed else '/pending'}"
+                    for state in active if state.cleared_at is None
+                ]
+                self.log_file.write(
+                    f"  Cell {cell} team {team}: offers={offer_ids}, active={active_pairs}\n"
+                )
 
-                for cell, state in r.consensus.items():
-                    status = "DECIDED" if state.get("decided") else "IN_PROGRESS"
-                    decided_pair = state.get("decided", "None")
-                    quorum = state.get("quorum", "?")
-                    proposed = state.get("proposed", (None, None))
-
-                    self.log_file.write(f"  Robot {r.id} for cell {cell}: {status}\n")
-                    self.log_file.write(f"    Decided: {decided_pair}, Quorum: {quorum}\n")
-                    if proposed[0]:
-                        self.log_file.write(f"    Proposed: n={proposed[0]}, pair={proposed[1]}\n")
-
-        if active_consensus:
+        if any_entries:
             self.log_file.write("\n")
+            self.log_file.flush()
 
     def log_messages(self, messages_sent: List[dict]):
         """Log all messages sent between robots this step."""
@@ -143,13 +151,6 @@ class SimulationLogger:
                 elif msg['kind'] == 'help_request':
                     payload = msg['payload']
                     self.log_file.write(f" [gold_pos={payload.get('gold_pos', 'N/A')}, requester_pos={payload.get('requester_pos', 'N/A')}]")
-                elif msg['kind'] == 'paxos_prepare':
-                    payload = msg['payload']
-                    self.log_file.write(f" [cell={payload['cell']}, n={payload['n']}, pair={payload.get('pair', 'N/A')}]")
-                elif msg['kind'] == 'paxos_promise':
-                    payload = msg['payload']
-                    accepted_n = payload.get('accepted_n', payload.get('na', 'N/A'))
-                    self.log_file.write(f" [cell={payload['cell']}, n={payload['n']}, accepted_n={accepted_n}]")
                 else:
                     # For any other message types, show the raw payload
                     payload = msg.get('payload', {})
@@ -157,6 +158,82 @@ class SimulationLogger:
                         self.log_file.write(f" {payload}")
                 self.log_file.write("\n")
             self.log_file.write("\n")
+
+    def log_pair_formed(self, team: str, pair: Tuple[int, int], cell: Tuple[int, int], tick: int):
+        if not self.enabled or not self.log_file:
+            return
+
+        pair_list = list(pair)
+        self.log_file.write(
+            f"PAIR FORMED: Team {team} robots {pair_list} matched at {cell} (tick {tick})\n"
+        )
+        self.log_file.flush()
+
+    def log_pair_confirmed(self, team: str, pair: List[int], cell: Tuple[int, int], tick: int):
+        if not self.enabled or not self.log_file:
+            return
+
+        self.log_file.write(
+            f"PAIR CONFIRMED: Team {team} robots {pair} ready at {cell} (tick {tick})\n"
+        )
+        self.log_file.flush()
+
+    def log_pair_released(self, team: str, pair: List[int], cell: Tuple[int, int], tick: int):
+        if not self.enabled or not self.log_file:
+            return
+
+        self.log_file.write(
+            f"PAIR RELEASED: Team {team} robots {pair} cleared at {cell} (tick {tick})\n"
+        )
+        self.log_file.flush()
+
+    def log_pair_release_pending(self, team: str, pair: List[int], cell: Tuple[int, int], tick: int):
+        if not self.enabled or not self.log_file:
+            return
+
+        self.log_file.write(
+            f"PAIR RELEASE PENDING: Team {team} robots {pair} at {cell} (tick {tick})\n"
+        )
+        self.log_file.flush()
+
+    def log_pair_expired(self, team: str, pair: List[int], cell: Tuple[int, int], tick: int, reason: str):
+        if not self.enabled or not self.log_file:
+            return
+
+        self.log_file.write(
+            f"PAIR EXPIRED: Team {team} robots {pair} at {cell} (tick {tick}) reason={reason}\n"
+        )
+        self.log_file.flush()
+
+    def log_broker_events(self, events: List[dict]):
+        if not self.enabled or not self.log_file:
+            return
+
+        if not events:
+            return
+
+        self.log_file.write("Broker events:\n")
+        for ev in events:
+            kind = ev.get("kind", "unknown")
+            team = ev.get("team", "?")
+            pair = ev.get("pair")
+            robot = ev.get("robot")
+            cell = ev.get("cell")
+            tick = ev.get("tick")
+            reason = ev.get("reason")
+            if pair:
+                self.log_file.write(
+                    f"  [{tick}] {kind} team={team} pair={list(pair)} cell={cell}{f' reason={reason}' if reason else ''}\n"
+                )
+            elif robot is not None:
+                self.log_file.write(
+                    f"  [{tick}] {kind} team={team} robot={robot} cell={cell}{f' reason={reason}' if reason else ''}\n"
+                )
+            else:
+                self.log_file.write(
+                    f"  [{tick}] {kind} team={team} cell={cell}{f' reason={reason}' if reason else ''}\n"
+                )
+        self.log_file.flush()
 
     def log_actions(self, planned_moves: Dict[int, Optional[str]],
                    intents_a: Dict[Tuple[int,int], List[int]],

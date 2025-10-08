@@ -246,6 +246,72 @@
         color: #2c3a78;
         margin-right: 6px;
     }
+    tr.selected {
+        background: #e9f2ff;
+    }
+    tbody tr {
+        cursor: pointer;
+    }
+    .robot {
+        cursor: pointer;
+    }
+    .robot.selected {
+        box-shadow: 0 0 0 3px var(--panel-bg), 0 0 0 6px #ffbf69;
+    }
+    .robot .arrow {
+        pointer-events: none;
+    }
+    #robotDetailBody {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 0.88rem;
+    }
+    .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 8px 12px;
+    }
+    .detail-grid div strong {
+        display: block;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
+        margin-bottom: 2px;
+    }
+    .detail-section {
+        margin-top: 8px;
+    }
+    .detail-section h3 {
+        margin: 0 0 4px;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+    }
+    .detail-section pre {
+        margin: 0;
+        background: #f7f9ff;
+        padding: 6px;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .cell.selected-cell::before {
+        content: '';
+        position: absolute;
+        inset: 2px;
+        border: 2px solid #ffbf69;
+        border-radius: 6px;
+        pointer-events: none;
+    }
+    .detail-placeholder {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
 </style>
 </head>
 <body>
@@ -296,6 +362,10 @@
                 <tbody id="robotTable"></tbody>
             </table>
         </div>
+        <div class="panel" id="robotDetailsPanel" style="max-height: 340px; overflow:auto;">
+            <h2>Robot Details</h2>
+            <div id="robotDetailBody" class="detail-placeholder">Select a robot to inspect its state and planner context.</div>
+        </div>
         <div class="panel">
             <h2>Gold</h2>
             <div id="goldList" class="flex-col"></div>
@@ -315,12 +385,18 @@
     const summaryDiv = document.getElementById('summary');
     const robotTable = document.getElementById('robotTable');
     const goldList = document.getElementById('goldList');
+    const robotDetailsPanel = document.getElementById('robotDetailsPanel');
+    const robotDetailBody = document.getElementById('robotDetailBody');
 
     let gridSize = 20;
     let deposits = {A: {x:0, y:0}, B: {x:19, y:19}};
     let steps = [];
     let animationTimer = null;
     let cellMap = new Map();
+    let currentStep = null;
+    let selectedRobotId = null;
+    let robotDomMap = new Map();
+    let robotRowMap = new Map();
 
     fileInput.addEventListener('change', (event) => {
         const file = event.target.files && event.target.files[0];
@@ -333,7 +409,7 @@
                 if (!steps.length) throw new Error('No steps found in log');
                 buildGrid(gridSize);
                 viewer.style.display = 'grid';
-                statusMessage.textContent = `${steps.length} steps loaded for grid ${gridSize}?${gridSize}.`;
+                statusMessage.textContent = `${steps.length} steps loaded for grid ${gridSize}×${gridSize}.`;
                 stepSlider.max = steps.length - 1;
                 updateStep(0);
             } catch (err) {
@@ -396,12 +472,17 @@
 
     function updateStep(index, fromAuto = false) {
         const step = steps[index];
+        currentStep = step;
+        if (selectedRobotId !== null && !step.robots.some(r => r.id === selectedRobotId)) {
+            selectedRobotId = null;
+        }
         stepSlider.value = index;
         stepLabel.textContent = `${index} / ${steps.length - 1}`;
         drawStep(step);
         renderSummary(step);
         renderRobotTable(step);
         renderGold(step);
+        renderRobotDetails(getSelectedRobot());
     }
 
     function renderSummary(step) {
@@ -422,17 +503,22 @@
 
     function renderRobotTable(step) {
         robotTable.innerHTML = '';
+        robotRowMap = new Map();
         const fragment = document.createDocumentFragment();
         const sorted = [...step.robots].sort((a,b) => a.id - b.id);
         for (const robot of sorted) {
             const tr = document.createElement('tr');
             tr.innerHTML = `<td>${robot.id}</td><td>${robot.group}</td><td>${robot.role}</td><td>(${robot.x}, ${robot.y})</td><td>${robot.facing}</td>`;
+            tr.dataset.robotId = robot.id;
             if (robot.details && robot.details.length) {
                 tr.title = robot.details.join('\n');
             }
+            tr.addEventListener('click', () => selectRobot(robot.id));
             fragment.appendChild(tr);
+            robotRowMap.set(robot.id, tr);
         }
         robotTable.appendChild(fragment);
+        applySelectionHighlight();
     }
 
     function renderGold(step) {
@@ -443,9 +529,109 @@
         }
         for (const gold of step.gold) {
             const div = document.createElement('div');
-            div.textContent = `(${gold.x}, ${gold.y}) ?${gold.amount}`;
+            div.textContent = `(${gold.x}, ${gold.y}) × ${gold.amount}`;
             goldList.appendChild(div);
         }
+    }
+
+    function getSelectedRobot() {
+        if (!currentStep || selectedRobotId === null) return null;
+        return currentStep.robots.find(r => r.id === selectedRobotId) || null;
+    }
+
+    function selectRobot(id) {
+        selectedRobotId = (selectedRobotId === id) ? null : id;
+        applySelectionHighlight();
+        renderRobotDetails(getSelectedRobot());
+    }
+
+    function applySelectionHighlight() {
+        robotRowMap.forEach((row, id) => {
+            row.classList.toggle('selected', id === selectedRobotId);
+        });
+        robotDomMap.forEach((badge, id) => {
+            badge.classList.toggle('selected', id === selectedRobotId);
+        });
+        for (const cell of cellMap.values()) {
+            cell.classList.remove('selected-cell');
+        }
+        const robot = getSelectedRobot();
+        if (robot) {
+            const cell = cellMap.get(`${robot.x},${robot.y}`);
+            if (cell) cell.classList.add('selected-cell');
+        }
+    }
+
+    function renderRobotDetails(robot) {
+        if (robotDetailsPanel) {
+            robotDetailsPanel.scrollTop = 0;
+        }
+        if (!robot) {
+            robotDetailBody.textContent = 'Select a robot to inspect its state and planner context.';
+            robotDetailBody.classList.add('detail-placeholder');
+            return;
+        }
+        robotDetailBody.classList.remove('detail-placeholder');
+        robotDetailBody.innerHTML = '';
+
+        const heading = document.createElement('div');
+        heading.innerHTML = `<div class="badge">Robot ${robot.id}</div> Team ${robot.group}`;
+        robotDetailBody.appendChild(heading);
+
+        const meta = document.createElement('div');
+        meta.className = 'detail-grid';
+        const carrying = robot.carryingMate != null ? `With R${robot.carryingMate}` : 'No';
+        const target = robot.targetGold ? `(${robot.targetGold.x}, ${robot.targetGold.y})` : '—';
+        const tasksLine = (robot.details || []).find(item => item.startsWith('Tasks:')) || null;
+        const tasks = tasksLine ? tasksLine.replace(/^Tasks:\s*/, '') : '—';
+        meta.innerHTML = `
+            <div><strong>Role</strong><div>${robot.role}</div></div>
+            <div><strong>Facing</strong><div>${robot.facing}</div></div>
+            <div><strong>Position</strong><div>(${robot.x}, ${robot.y})</div></div>
+            <div><strong>Carrying</strong><div>${carrying}</div></div>
+            <div><strong>Target</strong><div>${target}</div></div>
+            <div><strong>Tasks</strong><div>${tasks}</div></div>
+        `;
+        robotDetailBody.appendChild(meta);
+
+        const detailGroups = groupDetailLines(robot.details).filter(({ key }) => key !== 'Tasks');
+        if (detailGroups.length) {
+            detailGroups.forEach(({ key, values }) => {
+                const section = document.createElement('div');
+                section.className = 'detail-section';
+                const title = document.createElement('h3');
+                title.textContent = key;
+                const body = document.createElement('pre');
+                body.textContent = values.join('\n');
+                section.appendChild(title);
+                section.appendChild(body);
+                robotDetailBody.appendChild(section);
+            });
+        } else {
+            const empty = document.createElement('div');
+            empty.className = 'detail-section detail-placeholder';
+            empty.textContent = 'No detailed log entries captured for this robot on this tick.';
+            robotDetailBody.appendChild(empty);
+        }
+    }
+
+    function groupDetailLines(lines = []) {
+        const grouped = new Map();
+        for (const line of lines) {
+            const text = line.trim();
+            if (!text) continue;
+            const idx = text.indexOf(':');
+            if (idx === -1) {
+                if (!grouped.has('Notes')) grouped.set('Notes', []);
+                grouped.get('Notes').push(text);
+                continue;
+            }
+            const key = text.slice(0, idx).trim();
+            const value = text.slice(idx + 1).trim();
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key).push(value);
+        }
+        return Array.from(grouped.entries()).map(([key, values]) => ({ key, values }));
     }
 
     const offsetPatterns = [
@@ -461,9 +647,10 @@
     ];
 
     function drawStep(step) {
+        robotDomMap = new Map();
         for (const cell of cellMap.values()) {
             cell.innerHTML = '';
-            cell.classList.remove('deposit');
+            cell.classList.remove('deposit', 'selected-cell');
         }
         const depA = cellMap.get(`${deposits.A.x},${deposits.A.y}`);
         const depB = cellMap.get(`${deposits.B.x},${deposits.B.y}`);
@@ -496,6 +683,7 @@
                 badge.classList.add(`group-${robot.group}`);
                 if (robot.role === 'TRANSPORTER') badge.classList.add('transporter');
                 badge.textContent = robot.id;
+                badge.dataset.robotId = robot.id;
                 const offset = offsetPatterns[idx] || {x: 0.5, y: 0.5};
                 badge.style.left = `${offset.x * 100}%`;
                 badge.style.top = `${offset.y * 100}%`;
@@ -506,9 +694,15 @@
                 const arrow = document.createElement('span');
                 arrow.className = `arrow ${robot.facing}`;
                 badge.appendChild(arrow);
+                badge.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    selectRobot(robot.id);
+                });
+                robotDomMap.set(robot.id, badge);
                 cell.appendChild(badge);
             });
         }
+        applySelectionHighlight();
     }
 
     function parseLog(text) {
@@ -635,7 +829,18 @@
         const [, id, group, x, y, facing, roleRaw, extra] = robotMatch;
         const role = roleRaw.trim();
         const details = [];
-        if (extra && extra.trim()) details.push(extra.trim());
+        let carryingMate = null;
+        let targetGold = null;
+        if (extra && extra.trim()) {
+            const extraTrim = extra.trim();
+            const carryMatch = extraTrim.match(/Carrying with R(\d+)/i);
+            if (carryMatch) carryingMate = Number(carryMatch[1]);
+            const targetMatch = extraTrim.match(/target_gold=\((\d+),\s*(\d+)\)/i);
+            if (targetMatch) {
+                targetGold = { x: Number(targetMatch[1]), y: Number(targetMatch[2]) };
+            }
+            details.push(extraTrim);
+        }
         return {
             id: Number(id),
             group,
@@ -643,7 +848,9 @@
             y: Number(y),
             facing,
             role,
-            details
+            details,
+            carryingMate,
+            targetGold
         };
     }
 })();

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import random
 import heapq
@@ -10,6 +10,7 @@ from .agents.robot import Robot, CarryPair
 from .core.types import DIR_ORDER, DIRS, addv
 from .core.bus import Bus
 from .core.logger import SimulationLogger
+from .core.consensus import PairBroker, PairDecision, PairState
 
 @dataclass
 class Config:
@@ -31,15 +32,18 @@ class Simulation:
         self.busA = Bus(rng, delay_max=1, drop_prob=0.0)
         self.busB = Bus(rng, delay_max=1, drop_prob=0.0)
         self.robots: List[Robot] = []
+        self.team_visited: Dict[str, Set[Tuple[int, int]]] = {"A": set(), "B": set()}
+        self.deposit_positions = {"A": self.gw.deposA, "B": self.gw.deposB}
         for i in range(self.cfg.num_per_team):
             pos = (rng.randint(0,5), rng.randint(0,5))
-            self.robots.append(Robot(rid=i, group="A", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busA, seed=cfg.seed))
+            self.robots.append(Robot(rid=i, group="A", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busA, seed=cfg.seed, team_visited=self.team_visited["A"]))
         for i in range(self.cfg.num_per_team, self.cfg.num_per_team*2):
             pos = (self.gw.size-1 - rng.randint(0,5), self.gw.size-1 - rng.randint(0,5))
-            self.robots.append(Robot(rid=i, group="B", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busB, seed=cfg.seed))
+            self.robots.append(Robot(rid=i, group="B", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busB, seed=cfg.seed, team_visited=self.team_visited["B"]))
         self.scoreA = 0
         self.scoreB = 0
         self.t = 0
+        self.pair_brokers: Dict[Tuple[int, int], PairBroker] = {}
 
         # Initialize logging
         self.logger = SimulationLogger(cfg.log_file, cfg.detailed_log)
@@ -54,11 +58,31 @@ class Simulation:
             if r.id==rid: return r
         return None
 
+    def broker_for(self, cell: Tuple[int, int]) -> PairBroker:
+        broker = self.pair_brokers.get(cell)
+        if broker is None:
+            broker = PairBroker(cell, deposit_positions=self.deposit_positions)
+            self.pair_brokers[cell] = broker
+        return broker
+
     def print_grid(self):
         print(render_ascii(self.gw, self.robots, self.scoreA, self.scoreB, self.t))
 
     def step(self):
-        self.logger.log_tick_start(self.t, self.scoreA, self.scoreB, self.robots, self.gw)
+        self.logger.log_tick_start(self.t, self.scoreA, self.scoreB, self.robots, self.gw, self.team_visited)
+
+        broker_events: List[dict] = []
+        expired_pairs: List[dict] = []
+        for cell, broker in self.pair_brokers.items():
+            expired = broker.expire_all(self.t)
+            if expired:
+                for ev in expired:
+                    expired_pairs.append(ev)
+
+        def remove_task(robot: Robot, task: Task) -> None:
+            """Remove a task from a robot's scheduler and keep the heap valid."""
+            robot.sched.h.remove(task)
+            heapq.heapify(robot.sched.h)
 
         # Step 1: Message Delivery Phase
         for m in self.busA.deliver(self.t):
@@ -77,9 +101,6 @@ class Simulation:
             r.plan(self.t, self.gw, teamA if r.group == "A" else teamB)
 
         # Step 3: Communication Phase - process sense tasks and messages
-        promises = []
-        accepted = []
-
         for r in self.robots:
             # Process sense tasks first to handle communication
             sense_task = None
@@ -89,29 +110,72 @@ class Simulation:
                     break
 
             if sense_task:
-                r.sched.h.remove(sense_task)
-                pr, acc = r.digest_inbox(self.t, r.inbox)
-                promises.extend(pr)
-                accepted.extend(acc)
+                remove_task(r, sense_task)
+                r.digest_inbox(self.t, r.inbox)
                 r.maybe_beacon(self.t, teamA if r.group == "A" else teamB)
 
-        # Step 4: Consensus Phase - handle consensus-related tasks
+        # Step 4: Pair offer phase - interact with brokers
+        pair_decisions: List[PairDecision] = []
         for r in self.robots:
-            consensus_task = None
+            offer_task = None
             for task in r.sched.h:
-                if task.name == "pair_consensus" and task.release <= self.t:
-                    consensus_task = task
+                if task.name == "pair_offer" and task.release <= self.t:
+                    offer_task = task
                     break
 
-            if consensus_task:
-                r.sched.h.remove(consensus_task)
-                r.try_consensus_pair(self.t, self.gw, teamA if r.group == "A" else teamB)
+            if offer_task:
+                remove_task(r, offer_task)
+                if not r.carry and self.gw.gold_at(r.pos) > 0:
+                    broker = self.broker_for(r.pos)
+                    decisions = r.offer_pair(self.t, broker)
+                    pair_decisions.extend(decisions)
 
-        # Integrate Paxos messages after all robots have processed communication
+        confirmed_states: Dict[Tuple[int, int], PairState] = {}
+        for decision in pair_decisions:
+            broker = self.broker_for(decision.cell)
+            for rid in decision.pair:
+                robot = self.robot_by_id(rid)
+                if robot:
+                    robot.receive_pair(self.t, decision)
+                    state = broker.mark_ready(robot.group, rid, self.t)
+                    if state and state.confirmed:
+                        confirmed_states[state.pair] = state
+            self.logger.log_pair_formed(decision.team, decision.pair, decision.cell, decision.decided_at)
+
+        # Keep-alive readiness checks for robots still waiting on confirmation.
         for r in self.robots:
-            r.integrate_promises_and_accepts(
-                self.t, promises, accepted, teamA if r.group == "A" else teamB
-            )
+            if r.carry:
+                continue
+            if r.current_pair and not r.current_pair.confirmed and r.current_pair.cell == r.pos:
+                broker = self.broker_for(r.current_pair.cell)
+                state = broker.mark_ready(r.group, r.id, self.t)
+                if state and state.confirmed:
+                    confirmed_states[state.pair] = state
+
+        # Notify robots whose pairs just became confirmed.
+        for pair_key, state in confirmed_states.items():
+            for rid in pair_key:
+                robot = self.robot_by_id(rid)
+                if robot:
+                    robot.on_pair_confirmed(self.t)
+            self.logger.log_pair_confirmed(state.team, list(pair_key), state.cell, self.t)
+
+        for cell, broker in self.pair_brokers.items():
+            drained = broker.drain_events()
+            if drained:
+                broker_events.extend(drained)
+
+        # Handle broker expirations (timeouts) and log raw broker events.
+        for ev in expired_pairs:
+            pair_tuple = tuple(ev.get("pair", []))
+            for rid in pair_tuple:
+                robot = self.robot_by_id(rid)
+                if robot:
+                    robot.on_pair_timeout(self.t, ev["cell"], ev.get("reason", "unknown"), pair_tuple if pair_tuple else None)
+            self.logger.log_pair_expired(ev["team"], list(ev.get("pair", [])), ev["cell"], ev["tick"], ev.get("reason", "unknown"))
+
+        if broker_events:
+            self.logger.log_broker_events(broker_events)
 
         # Step 5: Coordination Phase - handle coordinate tasks
         intentsA: Dict[Tuple[int,int], List[int]] = {}
@@ -125,13 +189,16 @@ class Simulation:
                     break
 
             if coord_task:
-                r.sched.h.remove(coord_task)
+                remove_task(r, coord_task)
                 cell = r.pos
                 if self.gw.cells[cell[1]][cell[0]]["gold"] > 0 and not r.carry:
-                    if r.group == "A":
-                        intentsA.setdefault(cell, []).append(r.id)
-                    else:
-                        intentsB.setdefault(cell, []).append(r.id)
+                    if r.current_pair and r.current_pair.cell == cell:
+                        mate = self.robot_by_id(r.current_pair.partner_id)
+                        if mate and mate.pos == cell and not mate.carry and r.current_pair.confirmed:
+                            if r.group == "A":
+                                intentsA.setdefault(cell, []).append(r.id)
+                            else:
+                                intentsB.setdefault(cell, []).append(r.id)
 
         # Step 6: Movement Phase - handle movement tasks
         planned_moves: Dict[int, Optional[str]] = {}
@@ -150,7 +217,7 @@ class Simulation:
                     break
 
             if movement_task:
-                r.sched.h.remove(movement_task)
+                remove_task(r, movement_task)
                 if movement_task.name == "explore":
                     mv = r.step_explore(self.gw, self.robots)
                     # Handle all possible return values from step_explore
@@ -193,7 +260,7 @@ class Simulation:
 
         # Log messages and consensus states
         self.logger.log_messages(all_messages)
-        self.logger.log_consensus_states(self.robots)
+        self.logger.log_broker_states(self.pair_brokers)
 
         self.resolve_pickups(intentsA, intentsB)
 
@@ -244,6 +311,33 @@ class Simulation:
                 else:
                     self.scoreB += gold_deposited
                     self.logger.log_gold_deposit('B', [r.id, mate.id], gold_deposited, self.scoreB)
+                origin_cell = r.carry.origin_cell
+                broker = self.broker_for(origin_cell)
+                release_a = r.release_pair(self.t, broker, mate.id)
+                release_b = mate.release_pair(self.t, broker, r.id)
+                cleared_state = release_a or release_b
+                if cleared_state:
+                    self.logger.log_pair_released(
+                        cleared_state.team,
+                        list(cleared_state.pair),
+                        cleared_state.cell,
+                        cleared_state.cleared_at if cleared_state.cleared_at is not None else self.t
+                    )
+                else:
+                    self.logger.log_pair_release_pending(
+                        r.group,
+                        [r.id, mate.id],
+                        origin_cell,
+                        self.t
+                    )
+                for bot in (r, mate):
+                    if hasattr(bot, 'add_cooldown'):
+                        bot.add_cooldown(origin_cell, self.t)
+                    if hasattr(bot, '_forget_gold'):
+                        bot._forget_gold(origin_cell)
+                    if hasattr(bot, 'wander_dir'):
+                        bot.wander_dir = None
+                        bot.wander_steps = 0
                 self.clear_pair(r, mate)
 
         # Log actions taken this tick
@@ -259,19 +353,24 @@ class Simulation:
                 r.carry_pair = None
             r.role = "SCOUT"
             r.target_gold = None
+            if hasattr(r, 'current_pair'):
+                r.current_pair = None
+            if hasattr(r, 'pending_offer_cell'):
+                r.pending_offer_cell = None
+            if hasattr(r, 'offer_wait_deadline'):
+                r.offer_wait_deadline = None
+            if hasattr(r, 'cell_cooldowns') and hasattr(r, 'pos'):
+                r.cell_cooldowns.pop(r.pos, None)
             if hasattr(r, '_help_requested'):
                 delattr(r, '_help_requested')
             if hasattr(r, '_help_wait_counter'):
                 delattr(r, '_help_wait_counter')
-            if hasattr(r, 'consensus'):
-                cells = list(r.consensus.keys())
-                for cell in cells:
-                    st = r.consensus.get(cell)
-                    if not st or st.get('decided') is None or r.id in st.get('decided', []):
-                        r.consensus.pop(cell, None)
             if hasattr(r, 'sched'):
                 r.sched.h = [task for task in r.sched.h if task.name != 'to_deposit']
                 heapq.heapify(r.sched.h)
+            if hasattr(r, 'wander_dir'):
+                r.wander_dir = None
+                r.wander_steps = 0
             if hasattr(r, 'enqueue_explore_soon'):
                 r.enqueue_explore_soon(self.t)
         if hasattr(self.logger, 'log_pair_cleared'):
@@ -286,57 +385,45 @@ class Simulation:
             if len(wantA)==2 and len(wantB)==2:
                 if gold_here >= 2:
                     self.gw.cells[cell[1]][cell[0]]["gold"] -= 2
-                    self.pair(wantA[0], wantA[1])
-                    self.pair(wantB[0], wantB[1])
+                    self.pair(wantA[0], wantA[1], cell)
+                    self.pair(wantB[0], wantB[1], cell)
                     self.logger.log_gold_pickup('A', wantA, cell, 1)
                     self.logger.log_gold_pickup('B', wantB, cell, 1)
                 continue
             if len(wantA)==2 and gold_here>=1:
                 self.gw.cells[cell[1]][cell[0]]["gold"] -= 1
-                self.pair(wantA[0], wantA[1])
+                self.pair(wantA[0], wantA[1], cell)
                 self.logger.log_gold_pickup('A', wantA, cell, 1)
             if len(wantB)==2 and gold_here>=1:
                 self.gw.cells[cell[1]][cell[0]]["gold"] -= 1
-                self.pair(wantB[0], wantB[1])
+                self.pair(wantB[0], wantB[1], cell)
                 self.logger.log_gold_pickup('B', wantB, cell, 1)
 
     def coordinate_pair_movement(self, r1, r2):
         """Coordinate movement for a pair of robots carrying gold together."""
         tgt = self.gw.deposA if r1.group == 'A' else self.gw.deposB
 
-        if r1.facing != r2.facing:
-            def rotate_toward(robot, target_facing):
-                current_idx = DIR_ORDER.index(robot.facing)
-                target_idx = DIR_ORDER.index(target_facing)
-                right_turns = (target_idx - current_idx) % 4
-                left_turns = (current_idx - target_idx) % 4
-                if right_turns == 2 and left_turns == 2:
-                    robot.rotate_back()
-                elif right_turns <= left_turns:
-                    robot.rotate_right()
-                else:
-                    robot.rotate_left()
-
-            r1_dist = abs(r1.pos[0] - tgt[0]) + abs(r1.pos[1] - tgt[1])
-            r2_dist = abs(r2.pos[0] - tgt[0]) + abs(r2.pos[1] - tgt[1])
-
-            if r1_dist <= r2_dist:
-                rotate_toward(r2, r1.facing)
-            else:
-                rotate_toward(r1, r2.facing)
-            return None, None
-
         current_separation = abs(r1.pos[0] - r2.pos[0]) + abs(r1.pos[1] - r2.pos[1])
 
         r1_state = (r1.pos, getattr(r1, 'last_pos', r1.pos), getattr(r1, 'last_moved_tick', 0))
         r2_state = (r2.pos, getattr(r2, 'last_pos', r2.pos), getattr(r2, 'last_moved_tick', 0))
+        r1_prev = r1_state[0]
+        r2_prev = r2_state[0]
+
+        def manhattan(pos):
+            return abs(pos[0] - tgt[0]) + abs(pos[1] - tgt[1])
+
+        r1_dist_before = manhattan(r1_prev)
+        r2_dist_before = manhattan(r2_prev)
 
         r1_move = r1.step_to_deposit(self.gw)
         r1_after = r1.pos
+        r1_dist_after = manhattan(r1_after)
         r1_moved = bool(r1_move and r1_move in DIRS)
 
         r2_move = r2.step_to_deposit(self.gw)
         r2_after = r2.pos
+        r2_dist_after = manhattan(r2_after)
         r2_moved = bool(r2_move and r2_move in DIRS)
 
         def revert_r1():
@@ -352,8 +439,31 @@ class Simulation:
             r2_move = None
 
         if r1_move and r1_move in DIRS and r2_move and r2_move in DIRS:
-            if r1_move == r2_move:
+            if r1_after == r2_after:
                 return r1_move, r2_move
+            new_separation = abs(r1_after[0] - r2_after[0]) + abs(r1_after[1] - r2_after[1])
+            if (new_separation <= current_separation and
+                r1_dist_after <= r1_dist_before and
+                r2_dist_after <= r2_dist_before):
+                return r1_move, r2_move
+            sep_r1_only = abs(r1_after[0] - r2_prev[0]) + abs(r1_after[1] - r2_prev[1])
+            sep_r2_only = abs(r1_prev[0] - r2_after[0]) + abs(r1_prev[1] - r2_after[1])
+            r1_improves = (r1_dist_after < r1_dist_before) or (
+                r1_dist_after == r1_dist_before and sep_r1_only <= current_separation)
+            r2_improves = (r2_dist_after < r2_dist_before) or (
+                r2_dist_after == r2_dist_before and sep_r2_only <= current_separation)
+            if r1_improves and not r2_improves:
+                revert_r2()
+                return r1_move, None
+            if r2_improves and not r1_improves:
+                revert_r1()
+                return None, r2_move
+            if r1_improves and r2_improves:
+                if r1_dist_after <= r2_dist_after:
+                    revert_r2()
+                    return r1_move, None
+                revert_r1()
+                return None, r2_move
             revert_r1()
             revert_r2()
             return None, None
@@ -374,11 +484,13 @@ class Simulation:
 
         return None, None
 
-    def pair(self, r1_id:int, r2_id:int):
+    def pair(self, r1_id:int, r2_id:int, cell: Tuple[int, int]):
         r1 = self.robot_by_id(r1_id); r2 = self.robot_by_id(r2_id)
         if r1 and r2 and not r1.carry and not r2.carry:
-            r1.carry = CarryPair(mate_id=r2.id, gold_count=1)
-            r2.carry = CarryPair(mate_id=r1.id, gold_count=1)
+            r1.carry = CarryPair(mate_id=r2.id, gold_count=1, origin_cell=cell)
+            r2.carry = CarryPair(mate_id=r1.id, gold_count=1, origin_cell=cell)
+            r1.current_pair = None
+            r2.current_pair = None
 
             # Reset robot states for transition to transport mode
             r1.role = "TRANSPORTER"
@@ -432,7 +544,3 @@ class Simulation:
         # Close log file
         self.logger.log_simulation_end(self.scoreA, self.scoreB, self.gw, self.robots, self.t)
         self.logger.close()
-
-
-
-
