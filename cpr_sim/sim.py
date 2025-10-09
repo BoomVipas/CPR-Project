@@ -36,10 +36,29 @@ class Simulation:
         self.deposit_positions = {"A": self.gw.deposA, "B": self.gw.deposB}
         for i in range(self.cfg.num_per_team):
             pos = (rng.randint(0,5), rng.randint(0,5))
-            self.robots.append(Robot(rid=i, group="A", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busA, seed=cfg.seed, team_visited=self.team_visited["A"]))
+            self.robots.append(Robot(
+                rid=i,
+                group="A",
+                pos=pos,
+                facing=rng.choice(DIR_ORDER),
+                bus=self.busA,
+                seed=cfg.seed,
+                team_visited=self.team_visited["A"],
+                is_perma_scout=i < 2,
+            ))
         for i in range(self.cfg.num_per_team, self.cfg.num_per_team*2):
             pos = (self.gw.size-1 - rng.randint(0,5), self.gw.size-1 - rng.randint(0,5))
-            self.robots.append(Robot(rid=i, group="B", pos=pos, facing=rng.choice(DIR_ORDER), bus=self.busB, seed=cfg.seed, team_visited=self.team_visited["B"]))
+            team_idx = i - self.cfg.num_per_team
+            self.robots.append(Robot(
+                rid=i,
+                group="B",
+                pos=pos,
+                facing=rng.choice(DIR_ORDER),
+                bus=self.busB,
+                seed=cfg.seed,
+                team_visited=self.team_visited["B"],
+                is_perma_scout=team_idx < 2,
+            ))
         self.scoreA = 0
         self.scoreB = 0
         self.t = 0
