@@ -71,7 +71,8 @@ class SimulationLogger:
                 carry_info = f" [Carrying with R{r.carry.mate_id}, Gold:{r.carry.gold_count}]"
 
             # Add role and additional state info
-            role_info = f" [{r.role}]"
+            role_label = r.role + ("*" if getattr(r, "is_perma_scout", False) else "")
+            role_info = f" [{role_label}]"
             state_info = ""
             if hasattr(r, 'target_gold') and r.target_gold:
                 state_info += f" target_gold={r.target_gold}"

@@ -546,7 +546,8 @@ class Simulation:
                 print("\nRobot Status:")
                 for r in self.robots:
                     carry_info = f" [Carrying with R{r.carry.mate_id}]" if r.carry else ""
-                    role_info = f" [{r.role}]"
+                    role_label = r.role + ("*" if getattr(r, "is_perma_scout", False) else "")
+                    role_info = f" [{role_label}]"
                     print(
                         f"  R{r.id} (Team {r.group}): ({r.pos[0]:2d},{r.pos[1]:2d}) "
                         f"facing {r.facing}{role_info}{carry_info}"

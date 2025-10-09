@@ -23,6 +23,8 @@ def render_ascii(gw, robots, scoreA, scoreB, t):
         ch = 'A' if r.group == 'A' else 'B'
         if getattr(r, 'carry', None):
             ch = ch.lower()
+        elif getattr(r, 'is_perma_scout', False):
+            ch = 'S' if r.group == 'A' else 's'
         x, y = r.pos
         layer[y][x] = ch
 
