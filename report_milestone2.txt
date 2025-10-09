@@ -43,6 +43,21 @@ To validate the new behaviour:
 * Grepped simulation logs for `reason=active_timeout` after each run; the absence of hits confirms the TTL tuning works.
 * Spot-checked broker event streams to verify that pair creation, confirmation, and release phases remain intact.
 
+5. Permanent Scout Coverage
+---------------------------
+**Goal.** Maintain continuous reconnaissance so fresh gold sightings reach transport-capable teammates quickly.
+
+**Work.**
+- Marked the two lowest-ID robots on each team as dedicated scouts (`Simulation.__init__`). They remain in the SCOUT role, ignore help requests that would otherwise redirect them, and never keep a `CarryPair`.
+- The planner gives these scouts uninterrupted `explore` cycles so they keep sweeping new territory every few ticks.
+
+**Indicator Improvements.**
+- Console output now renders scout roles as `[SCOUT*]` for easy tracking.
+- The ASCII map displays permanent scouts as `S`/`s` instead of plain team glyphs, making it clear who is roaming for intel versus hauling gold.
+- The detailed logger mirrors the same notation so post-run analytics can separate general scouts from the dedicated pair.
+
+**Result.** Teams enjoy steady inflow of location updates even while transport pairs head back to base, accelerating follow-up pickups by other bots.
+
 5. Suggested Next Steps
 -----------------------
 Looking ahead to future milestones:
@@ -51,4 +66,4 @@ Looking ahead to future milestones:
 - **Dynamic congestion awareness:** consider raising the TTL margin when robots experience excessive waiting due to traffic, or adapt the route planning accordingly.
 - **Unit tests for broker TTL:** isolate `PairBroker._compute_active_ttl` to verify corner cases (different grid sizes, asymmetric deposits) without running full simulations.
 
-These updates ensure the carrying subsystem is dependable under long-range scenarios, closing the gaps observed during Milestone 1 analysis while laying groundwork for more advanced coordination in Milestone 3.
+These updates ensure the carrying subsystem is dependable under long-range scenarios while the scouting layer keeps the team’s gold intelligence fresh, closing the gaps observed during Milestone 1 analysis and laying groundwork for more advanced coordination in Milestone 3.
