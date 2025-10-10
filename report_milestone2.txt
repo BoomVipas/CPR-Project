@@ -43,22 +43,18 @@ To validate the new behaviour:
 * Grepped simulation logs for `reason=active_timeout` after each run; the absence of hits confirms the TTL tuning works.
 * Spot-checked broker event streams to verify that pair creation, confirmation, and release phases remain intact.
 
-5. Permanent Scout Coverage
----------------------------
-**Goal.** Maintain continuous reconnaissance so fresh gold sightings reach transport-capable teammates quickly.
+5. Gold Intelligence & Observability
+------------------------------------
+**Goal.** Keep every robot’s picture of the map fresh and make post-run diagnosis trivial.
 
 **Work.**
-- Marked the two lowest-ID robots on each team as dedicated scouts (`Simulation.__init__`). They remain in the SCOUT role, ignore help requests that would otherwise redirect them, and never keep a `CarryPair`.
-- The planner gives these scouts uninterrupted `explore` cycles so they keep sweeping new territory every few ticks.
+- Recorded gold sightings with timestamps (`gold_last_seen`) and certainty flags so stale intel naturally expires after `GOLD_TTL_TICKS`.
+- Beacon messages share only the current, certain subset of gold locations, reducing gossip noise while still synchronising teammates.
+- Console output, the ASCII renderer, and `simulation_log.txt` now surface transporter state and end-of-run snapshots, so it’s easy to verify pick-ups, deposits, and broker events.
 
-**Indicator Improvements.**
-- Console output now renders scout roles as `[SCOUT*]` for easy tracking.
-- The ASCII map displays permanent scouts as `S`/`s` instead of plain team glyphs, making it clear who is roaming for intel versus hauling gold.
-- The detailed logger mirrors the same notation so post-run analytics can separate general scouts from the dedicated pair.
+**Result.** Scouts and haulers operate off the same up-to-date gold ledger, and the richer logs make it obvious how each run unfolded without digging through internals.
 
-**Result.** Teams enjoy steady inflow of location updates even while transport pairs head back to base, accelerating follow-up pickups by other bots.
-
-5. Suggested Next Steps
+6. Suggested Next Steps
 -----------------------
 Looking ahead to future milestones:
 
@@ -66,4 +62,4 @@ Looking ahead to future milestones:
 - **Dynamic congestion awareness:** consider raising the TTL margin when robots experience excessive waiting due to traffic, or adapt the route planning accordingly.
 - **Unit tests for broker TTL:** isolate `PairBroker._compute_active_ttl` to verify corner cases (different grid sizes, asymmetric deposits) without running full simulations.
 
-These updates ensure the carrying subsystem is dependable under long-range scenarios while the scouting layer keeps the team’s gold intelligence fresh, closing the gaps observed during Milestone 1 analysis and laying groundwork for more advanced coordination in Milestone 3.
+These updates ensure the carrying subsystem is dependable under long-range scenarios while the shared gold intelligence stays fresh, closing the gaps observed during Milestone 1 analysis and laying groundwork for more advanced coordination in Milestone 3.

@@ -44,8 +44,8 @@ Each robot maintains its own state machine driven by an EDF scheduler:
 2. **Task planning (`plan`)**
    * Always ensures a `sense` task is queued within the next 3 ticks.
    * If carrying gold, schedules a `to_deposit` task immediately.
-   * Otherwise, keeps an `explore` task pending—even after waiting on help—so every robot eventually vacates a stalled cell.
-   * When standing on gold, cooperates with the broker (`pair_offer`, `coordinate`) so only one confirmed pair attempts the pickup.
+   * Otherwise, always ensures there is an `explore` task pending—even if the robot recently waited for help. This guarantees the robot eventually leaves a cell if consensus or help fails to materialise.
+   * When standing on gold, queues `pair_consensus` and `coordinate` tasks as needed.
 3. **Exploration (`step_explore`)**
    * Priority 0: if standing on gold, attempt pickup, requesting help and waiting briefly for a partner.
    * Priority 1: if assigned as a `SUPPORTER`, head toward the specific gold cell requested.
@@ -89,16 +89,6 @@ Paxos is used to choose the exact pair when more than two candidates gather on t
 
 This directly addresses the freeze observed earlier: stale teammates no longer count toward the quorum, and the watchdog resets robots that wait too long on a cell.
 
-### Pair Broker (distance-aware carry window)
-
-The Paxos phase nominates a pair, but the dedicated broker at `cpr_sim/core/consensus/pair_broker.py` enforces the lifecycle:
-
-1. **Offer intake** — solo robots standing on gold register offers; the broker pairs the freshest two teammates.
-2. **Readiness handshake** — both robots must report in on the cell within the `handshake_ttl` window before the pair is considered active.
-3. **Dynamic TTL** — once confirmed, the broker grants an active window sized to the deposit distance (`max(active_ttl_min, manhattan(cell, deposit) * 2 + margin)`), preventing long-haul carriers from expiring mid-run while still clearing genuine stalemates.
-4. **Release** — after deposit, each carrier calls `release`; once both check in the broker frees the slot for future offers.
-5. **Diagnostics** — every state change is queued so the simulation logger can emit a complete event trace per tick.
-
 ---
 
 ## Robot POV: Discovery → Help → Consensus
@@ -141,11 +131,12 @@ The CLI (`cpr_sim/cli.py`) exposes runtime controls like `--ticks`, `--gold`, `-
 
 ## Recent Fixes (documented changes)
 
-1. **Scheduler hygiene** — Arbitrary task removals now re-heapify each robot’s EDF queue, ensuring deadlines are honoured and stale jobs never resurface.
-2. **Transport coordination** — `coordinate_pair_movement` only accepts moves that shorten the route or safely converge, eliminating the “spin at deposit” deadlock.
-3. **Distance-aware pair TTL** — Brokers size the carry window to the pickup-to-deposit distance, so legitimate long hauls no longer time out early.
-4. **Gold intel lifecycle** — Robots retain sightings with timestamps (`GOLD_TTL_TICKS`); beacons share only the fresh, certain subset with teammates.
-5. **Observability polish** — Console output, `simulation_log.txt`, and the ASCII renderer all reflect transporter state and final grid snapshots for quick post-run analysis.
+1. **Removed unused backups** — Old `sim.py.bak` has been deleted.
+2. **Terminal animation** — CLI now supports `--animate` with optional `--sleep-sec` to emulate live playback.
+3. **Logging upgrade** — Final grid snapshot is written to `simulation_log.txt` for post-run review.
+4. **Carry coordination** — Pair movement now reverts illegal moves and keeps pre-/post-move separation in sync, preventing phantom steps.
+5. **Consensus freshness** — Teammate positions expire automatically; Paxos quorums only include robots seen in the last five ticks.
+6. **Anti-freeze watchdog** — Robots stuck waiting on gold reset their help state and re-enter exploration; consensus state is garbage-collected after prolonged inactivity.
 
 ---
 
@@ -169,6 +160,5 @@ The CLI also honours `--num-per-team`, `--log-file`, and `--no-detailed-log` for
 * Implement real FOV so robots prefer newly observed gold instead of historical sightings.
 * Add scenario tests (pytest) to cover pickup, deposit, and consensus edge cases.
 * Persist telemetry (CSV/JSON) for offline analysis or visual dashboards.
-* Explore congestion-aware routing or adaptive TTL margins for even faster deliveries.
 
 Vipas Chantrapanichkul
