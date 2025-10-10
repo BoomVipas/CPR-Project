@@ -44,8 +44,6 @@ class Robot:
         bus,
         seed,
         team_visited: Optional[Set[Tuple[int, int]]] = None,
-        *,
-        is_perma_scout: bool = False,
     ):
         """
         Initialize the robot with its ID, group, position, facing direction, bus, and RNG seed.
@@ -71,7 +69,6 @@ class Robot:
         self.offer_wait_deadline: Optional[int] = None
         self.current_pair: Optional[PairAssignment] = None
         self.OFFER_WAIT_TICKS = 3
-        self.is_perma_scout = is_perma_scout
 
         # Enhanced AI and knowledge base
         self.knowledge_base: Dict[Tuple[int,int], Dict[str, any]] = {}
@@ -219,7 +216,7 @@ class Robot:
                         self._note_gold(tuple(gold_pos), 1, now, False)
             elif m.kind == "help_request":
                 gold_pos = tuple(m.payload.get("gold_pos", ()))
-                if gold_pos and not self.carry and self.role != "TRANSPORTER" and not self.is_perma_scout:
+                if gold_pos and not self.carry and self.role != "TRANSPORTER":
                     self.role = "SUPPORTER"
                     self.target_gold = gold_pos
                     self._note_gold(gold_pos, 1, now, True)
@@ -378,12 +375,7 @@ class Robot:
                     self.pending_offer_cell = None
                     self.offer_wait_deadline = None
                     self.enqueue_explore_soon(now)
-        if self.is_perma_scout and self.carry:
-            self.carry = None
         self.sched.add(Task(deadline=now + 1, release=now, name="sense"))
-        if self.is_perma_scout:
-            self.sched.add(Task(deadline=now + 3, release=now, name="explore"))
-            return
         if self.carry:
             self.sched.add(Task(deadline=now + 1, release=now, name="to_deposit"))
         else:
