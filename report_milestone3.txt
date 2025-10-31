@@ -1,0 +1,163 @@
+CPR Project – Milestone 3 Report
+================================
+
+Author: Vipas Chantrapanichkul  
+Date: current build based on Milestone 2 foundation
+
+Overview
+--------
+Milestone 2 delivered a decentralised Paxos-based pairing system with Lamport-stamped broadcasts, dynamic gold TTL logic, and an ASCII/JSON log pipeline. The main goal for Milestone 3 was to push the simulator closer to the asynchronous, failure-prone environment emphasised in the course. This report details the architectural changes, compares them to Milestone 2, highlights newly implemented algorithms (including the handshake strategy derived from the CSP model in the provided Milestone 3 paper), and presents supporting tests and tooling upgrades.
+
+Executive summary of changes since Milestone 2
+----------------------------------------------
+1. **Communication realism** – a stochastic message bus injects latency, reordering, and probabilistic loss into all team broadcasts, replacing the strictly sequential delivery used before.
+2. **Consensus resilience** – Paxos now reserves gold targets, enforces bounded retries, and exposes richer state to the logs/visualisation for debugging in delayed networks.
+3. **Handshake strategy** – an alternative, CSP-inspired finder/helper protocol is implemented alongside Paxos, selectable at runtime via `--consensus`.
+4. **Visual & diagnostic tooling** – the HTML viewer gained robot-level inspection; frames.json now records per-robot consensus/handshake state and generation metadata.
+5. **Rule/test coverage** – scenario tests validate pickup/drop/deposit rules, Paxos reservations, and handshake edge cases (including misdirected acknowledgements).
+
+Detailed comparison: Milestone 2 vs Milestone 3
+-----------------------------------------------
+
+### 1. Network and messaging
+- *Milestone 2*: Broadcasts were delivered deterministically on the next tick; robots effectively operated in a round-robin sequential loop.
+- *Milestone 3*: `cpr_sim/bus.py` introduced `MessageBus`, which draws delivery latency from a configurable range, optionally drops packets, and can reorder ready transmissions. CLI flags (`--message-delay-min/max`, `--message-loss`, `--message-reorder`) expose these parameters.  
+  *Effect*: Robots now experience realistic asynchronous channels. Paxos elections handle delayed promises; handshake messages can race and be lost, driving the need for robust recovery behaviour.
+
+### 2. Paxos improvements
+- *Milestone 2 issues*: During stressed runs the same gold cell could be chosen repeatedly by different leaders, causing four or more robots to converge while other cells went untouched. Paxos leaders also spun indefinitely against stale information.
+- *Milestone 3 fixes*:
+  - `_reserved_gold_positions` filters candidate cells when generating new proposals; it inspects teammates’ assigned gold, targets, and in-flight plans to enforce one pair per cell per team.
+  - Majorities now trigger re-broadcasts if commits are delayed, and leaders keep explicit `awaiting_ack` sets with bounded retries.
+  - Extended telemetry (control state, timers, consensus deadlines) is exported for each robot, improving log audits and visual inspection.
+
+### 3. Handshake consensus (new)
+- Implemented `cpr_sim/strategy_handshake.py`, mirroring the Milestone 3 CSP model:
+  - Finder broadcasts `finder_offer(index, pos)` while standing on gold.
+  - Helpers respond with `helper_response`; finder ACKs exactly one partner; helper commits only after verifying the matching ACK.
+  - Arrival confirmation (`helper_here`) plus `start_pickup` ensure simultaneous pickup despite network delay.
+  - Timeouts (`handshake_wait_response/here/ack/start`) abort stale attempts.
+- CLI integration: `--consensus handshake` swaps Paxos out for the handshake strategy.
+- Simulation logs and the HTML inspector show handshake stages (finder/ helper states, active index, partner IDs), enabling step-by-step tracing.
+
+### 4. Visualisation and logging upgrades
+- `frames.json` now bundles `generated_at`, run config, and per-robot consensus/handshake fields.
+- `visualization.html` gained:
+  - Status footer with timestamp/seed for the loaded frames.
+  - Robot inspector dropdown and cell-click follow buttons; selecting a robot displays its Paxos/handshake timers, targets, partners, and carrying status frame-by-frame.
+- ASCII logs embed control + consensus state per robot (e.g., `control=coordinating paxos=prepare/moving_to_gold`), aiding textual debugging.
+
+### 5. Tests & automation
+- Existing rule tests (pickup requirements, deposition rules, drop-on-desync) remain intact.
+- Added coverage in `tests/test_simulation_rules.py`:
+  - **Paxos reservation test** ensures `_select_candidate_gold` excludes cells already claimed by teammates.
+  - **Handshake success** ensures finder/helper eventually pick up and deposit, resurfacing handshake state reset.
+  - **Handshake abort** verifies helpers revert when an ACK targets a different robot—matching the race condition discussed in the Milestone 3 document.
+  - The helper abandonment test uses synthetic message injection to validate error-handling logic.
+- All tests pass via `python3 -m pytest tests/test_simulation_rules.py`.
+
+Selected code excerpts
+----------------------
+
+### 1. Stochastic message bus (`cpr_sim/bus.py`)
+```python
+class MessageBus:
+    def queue(self, robot: Robot, payload: dict, current_step: int) -> Optional[int]:
+        delay = self.rng.randint(self.latency_range[0], self.latency_range[1])
+        if self.drop_chance and self.rng.random() < self.drop_chance:
+            return None
+
+        message = Message(
+            sender_id=robot.id,
+            team=robot.team,
+            content=payload,
+            timestamp=current_step,
+        )
+        transmission = Transmission(
+            message=message,
+            deliver_at=current_step + delay,
+            latency=delay,
+        )
+        self.pending.append(transmission)
+        return delay
+```
+*How it works*: Every broadcast is wrapped in a `Transmission` with a randomly drawn delivery tick. The bus can return `None` to simulate packet loss, and later shuffles/releases the ready transmissions. This single function is the heart of the asynchronous behaviour we layered onto the previously sequential engine.
+
+### 2. Paxos reservation guard (`cpr_sim/strategy_paxos.py`)
+```python
+def _reserved_gold_positions(robot: Robot, engine) -> Set[Tuple[int, int]]:
+    reserved: Set[Tuple[int, int]] = set()
+    for teammate in engine.robots:
+        if teammate.team != robot.team:
+            continue
+        if teammate.assigned_gold and teammate.execution_state in {
+            "moving_to_gold",
+            "waiting_at_gold",
+            "carrying",
+            "depositing",
+        }:
+            reserved.add(tuple(teammate.assigned_gold))
+        target = getattr(teammate, "target_gold_for_consensus", None)
+        if target:
+            reserved.add(tuple(target))
+        plan = getattr(teammate, "current_plan", None)
+        if plan and teammate.paxos_state in {"prepare", "committing"}:
+            for assignment in plan.values():
+                gold = assignment.get("gold_pos") if isinstance(assignment, dict) else None
+                if isinstance(gold, (list, tuple)) and len(gold) == 2:
+                    reserved.add((int(gold[0]), int(gold[1])))
+    return reserved
+```
+*How it works*: Before proposing a new plan, each leader constructs the set of gold cells already “claimed” by teammates—either because they are walking to the cell, waiting there, carrying from it, or already running a Paxos phase concerning it. Any reserved cell is excluded from candidate generation, eliminating the multi-pair pile-up we observed in Milestone 2.
+
+### 3. Handshake message handling (`cpr_sim/strategy_handshake.py`)
+```python
+if robot.id == helper and mtype in {"finder_ack", "start_pickup"}:
+    if robot.handshake_active_index != index:
+        if mtype == "finder_ack" and payload.get("helper") != robot.id:
+            if robot.handshake_stage == "await_ack":
+                _reset_handshake(robot)
+        continue
+    if mtype == "finder_ack":
+        _handle_finder_ack(robot, payload)
+    elif mtype == "start_pickup":
+        _handle_start_pickup(robot)
+    continue
+
+if (
+    mtype == "finder_ack"
+    and robot.handshake_stage == "await_ack"
+    and robot.handshake_active_index == index
+    and payload.get("helper") != robot.id
+)
+    _reset_handshake(robot)
+    continue
+```
+*How it works*: Helpers reject acknowledgements that name a different robot, even if the message reuses the same index. This captures the CSP-specified guard that avoids “split brain” helpers. The surrounding code flows through the full handshake lifecycle (offer → response → ack → arrival → pickup), respecting network delays and index uniqueness.
+
+Architectural summary (current state)
+-------------------------------------
+- **Messaging**: `MessageBus` with stochastic delay/loss; CLI-configurable.
+- **Consensus strategies**:
+  - *Paxos (default)*: improved resilience, one cell per team, explicit retries and commit confirmation.
+  - *Handshake (optional)*: CSP-based finder/helper handshake with unique message indices and explicit stage machine.
+- **Robot model**: New handshake fields (`handshake_stage`, `role`, indices, partners, timers) alongside the Paxos data.
+- **Simulation engine**: Unchanged stepping order, but now strategies are swapped based on config; history entries include control state.
+- **Visual tooling**: Enhanced viewer, richer logs, robot inspector for consensus debugging.
+
+Validation
+----------
+- Paxos and handshake modes have both been run under the asynchronous bus (`--message-loss 0.05`, `--message-delay-max 3`); Paxos now avoids multi-team pile-ups, handshake exhibits expected retries and eventual deposits.
+- Rule + handshake tests run in ~0.02s and cover both success and failure paths.
+- Visual inspection confirms handshake sequences (finder broadcasts, helper responses, start_pickup) even when messages arrive late.
+
+Next steps (toward Milestone 4)
+-------------------------------
+1. **Full system selection logic** – combine Paxos and handshake pathways intelligently (e.g., fallback to handshake when Paxos fails to secure a majority, or vice versa).
+2. **Formal verification alignment** – expand the CSP/FDR models to multi-robot teams and verify the implemented code against those properties.
+3. **Fault tolerance** – simulate node failures (robots going offline mid-handshake) and integrate recovery procedures.
+4. **Performance metrics** – instrument throughput (gold per tick) across seeds and consensus modes to quantify improvements.
+
+Conclusion
+----------
+Milestone 3 transitions the project from a deterministic, sequential simulation to a fully asynchronous environment equipped with multiple consensus strategies. Critical gaps observed under network delay—particularly overlapping Paxos ballots—have been closed, and the new handshake strategy brings the CSP model from the reference report into executable form. Enhanced tooling (viewer, logs, tests) now provides the observability needed to develop toward even richer multi-robot coordination in the next milestone.

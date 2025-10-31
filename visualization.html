@@ -1,859 +1,844 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>CPR Simulation Grid Viewer</title>
-<style>
+  <meta charset="UTF-8" />
+  <title>CPR Simulation Viewer</title>
+  <style>
     :root {
-        --cell-size: 32px;
-        --grid-border: #ced4e0;
-        --grid-line: #e3e7f2;
-        --bg: #f4f6fb;
-        --panel-bg: #ffffff;
-        --panel-border: #d8deed;
-        --text-primary: #1d2333;
-        --text-muted: #6f7787;
-        --group-a: #1f77b4;
-        --group-b: #d62728;
-        --gold: #ffd166;
-        --deposit: #6c757d;
-        --transporter-ring: #0f172a;
+      --bg: #101322;
+      --panel: #161a2c;
+      --panel-border: #1f2438;
+      --text: #f5f7ff;
+      --muted: #8c95b8;
+      --accent: #3b82f6;
+      --accent-soft: rgba(59, 130, 246, 0.18);
+      --danger: #f87171;
+      --gold: #facc15;
+      --cell-size: 30px;
     }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
-        margin: 0;
-        padding: 24px;
-        font-family: "Segoe UI", Arial, sans-serif;
-        background: var(--bg);
-        color: var(--text-primary);
+      margin: 0;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1a1f33 0%, #0f1120 55%, #080812 100%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px 64px;
     }
+
+    main {
+      width: min(1100px, 100%);
+      display: grid;
+      gap: 20px;
+    }
+
     h1 {
-        margin: 0 0 12px;
-        font-size: 1.8rem;
+      font-size: 2.1rem;
+      letter-spacing: 0.04em;
+      margin: 0 0 12px;
+      text-align: center;
     }
-    p { margin: 6px 0; }
-    a { color: var(--group-a); }
-    #statusMessage {
-        margin: 8px 0 18px;
-        font-style: italic;
-        color: var(--text-muted);
+
+    #instructions {
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 14px;
+      font-size: 0.95rem;
     }
-    input[type="file"] {
-        margin-bottom: 10px;
-    }
+
     #viewer {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 20px;
+      display: grid;
+      gap: 18px;
     }
-    #leftColumn {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-    }
-    #gridPanel {
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 10px;
-        padding: 14px;
-        box-shadow: 0 2px 6px rgba(58, 64, 79, 0.08);
-    }
-    #gridHeader {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 12px;
-    }
-    #gridHeader h2 {
-        margin: 0;
-        font-size: 1.2rem;
-    }
-    #gridBoard {
-        width: calc(var(--cell-size) * 20 + 2px);
-        height: calc(var(--cell-size) * 20 + 2px);
-        border: 2px solid var(--grid-border);
-        border-radius: 8px;
-        overflow: hidden;
-    }
-    #gridBoard-inner {
-        display: grid;
-        grid-template-columns: repeat(20, var(--cell-size));
-        grid-template-rows: repeat(20, var(--cell-size));
-        width: calc(var(--cell-size) * 20);
-        height: calc(var(--cell-size) * 20);
-        background: #fff;
-    }
-    .cell {
-        position: relative;
-        width: var(--cell-size);
-        height: var(--cell-size);
-        border-right: 1px solid var(--grid-line);
-        border-bottom: 1px solid var(--grid-line);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.7rem;
-        color: var(--text-muted);
-    }
-    .cell:nth-child(20n) {
-        border-right: none;
-    }
-    .cell:nth-last-child(-n+20) {
-        border-bottom: none;
-    }
-    .cell.deposit::after {
-        content: '';
-        position: absolute;
-        inset: 4px;
-        background: var(--deposit);
-        opacity: 0.35;
-        border-radius: 4px;
-    }
-    .gold-marker {
-        position: absolute;
-        width: 70%;
-        height: 70%;
-        background: var(--gold);
-        border-radius: 6px;
-        box-shadow: inset 0 -3px 0 rgba(0,0,0,0.2);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.75rem;
-        font-weight: bold;
-        color: #8a5b08;
-    }
-    .robot {
-        position: absolute;
-        width: 58%;
-        height: 58%;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #fff;
-        font-size: 0.75rem;
-        font-weight: 600;
-        transition: transform 0.25s ease;
-    }
-    .robot.group-A { background: var(--group-a); }
-    .robot.group-B { background: var(--group-b); }
-    .robot.transporter {
-        box-shadow: 0 0 0 3px var(--panel-bg), 0 0 0 5px var(--transporter-ring);
-    }
-    .robot .arrow {
-        position: absolute;
-        width: 0;
-        height: 0;
-        border-style: solid;
-    }
-    .robot .arrow.N { border-width: 0 4px 6px 4px; border-color: transparent transparent #ff3b30 transparent; top: -6px; }
-    .robot .arrow.S { border-width: 6px 4px 0 4px; border-color: #ff3b30 transparent transparent transparent; bottom: -6px; }
-    .robot .arrow.E { border-width: 4px 0 4px 6px; border-color: transparent transparent transparent #ff3b30; right: -6px; }
-    .robot .arrow.W { border-width: 4px 6px 4px 0; border-color: transparent #ff3b30 transparent transparent; left: -6px; }
-    #rightColumn {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-        width: 340px;
-    }
+
     .panel {
-        background: var(--panel-bg);
-        border: 1px solid var(--panel-border);
-        border-radius: 10px;
-        padding: 14px;
-        box-shadow: 0 2px 6px rgba(58, 64, 79, 0.08);
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      box-shadow: 0 12px 35px rgba(0, 0, 0, 0.3);
     }
-    .panel h2 {
-        margin: 0 0 10px;
-        font-size: 1.1rem;
+
+    #controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px;
     }
-    #controlsRow {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
+
+    #controls button,
+    #controls select {
+      background: #1f2540;
+      border: 1px solid #283059;
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.1s ease;
     }
-    #stepSlider {
-        flex: 1;
-        min-width: 200px;
+
+    #controls button:hover,
+    #controls select:focus {
+      background: #273063;
+      outline: none;
     }
-    button, select {
-        padding: 6px 12px;
-        border-radius: 6px;
-        border: 1px solid var(--group-a);
-        background: var(--group-a);
-        color: #fff;
-        cursor: pointer;
-        font-size: 0.95rem;
+
+    #controls button:active {
+      transform: translateY(1px);
     }
-    button.secondary, select {
-        border: 1px solid #c0c7db;
-        background: #fff;
-        color: var(--text-primary);
+
+    #controls label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
     }
-    button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+
+    #frameSlider {
+      flex: 1 1 220px;
+      appearance: none;
+      height: 6px;
+      background: #1f2540;
+      border-radius: 999px;
+      outline: none;
     }
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.87rem;
+
+    #frameSlider::-webkit-slider-thumb {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid #cbd5ff;
+      cursor: pointer;
     }
-    th, td {
-        padding: 6px 4px;
-        border-bottom: 1px solid #eef1f7;
-        text-align: left;
+
+    #frameInfo {
+      color: var(--muted);
+      font-size: 0.92rem;
     }
-    th { background: #f1f4fb; font-weight: 600; }
-    tbody tr:hover { background: #f8f9fd; }
-    .flex-col { display: flex; flex-direction: column; gap: 6px; }
-    .legend {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        font-size: 0.85rem;
-        color: var(--text-muted);
+
+    #boardWrapper {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: min-content 1fr;
+      align-items: start;
     }
-    .legend span {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
+
+    #grid {
+      display: grid;
+      gap: 2px;
+      background: var(--panel-border);
+      padding: 8px;
+      border-radius: 12px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
     }
-    .legend i {
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        display: inline-block;
+
+    .cell {
+      width: var(--cell-size);
+      height: var(--cell-size);
+      border-radius: 6px;
+      background: #1a1f33;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+      line-height: 1.1;
+      padding: 2px;
+      position: relative;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+      cursor: pointer;
+      transition: box-shadow 0.2s ease, transform 0.1s ease;
     }
-    .legend .gold {
-        border-radius: 4px;
-        background: var(--gold);
+
+    .cell:hover {
+      box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.4);
     }
-    .legend .deposit {
-        border-radius: 4px;
-        background: var(--deposit);
+
+    .cell.selected {
+      box-shadow: inset 0 0 0 2px var(--accent);
+      transform: translateY(-1px);
     }
+
+    .cell.depositA::after,
+    .cell.depositB::after {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      border-radius: 4px;
+      opacity: 0.28;
+    }
+
+    .cell.depositA::after {
+      background: #38bdf8;
+    }
+
+    .cell.depositB::after {
+      background: #f87171;
+    }
+
+    .cell.gold {
+      box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.7);
+    }
+
+    .cell.teamA {
+      color: #89b4ff;
+      font-weight: 600;
+    }
+
+    .cell.teamB {
+      color: #ff9ca2;
+      font-weight: 600;
+    }
+
+    .cell.carrying {
+      border: 1px solid rgba(139, 92, 246, 0.6);
+    }
+
+    #sidebar {
+      display: grid;
+      gap: 16px;
+    }
+
+    #scoreboard {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-family: "JetBrains Mono", "Fira Mono", monospace;
+    }
+
+    #scoreboard strong {
+      font-size: 1.1rem;
+      letter-spacing: 0.05em;
+    }
+
+    #logs {
+      background: #111527;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.85rem;
+      color: #b0bad9;
+      height: 180px;
+      overflow: auto;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      white-space: pre-wrap;
+    }
+
+    #robotDetails {
+      background: #111527;
+      border-radius: 8px;
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      max-height: 220px;
+      overflow: auto;
+      font-size: 0.86rem;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .robot-card {
+      border-radius: 8px;
+      background: rgba(59, 130, 246, 0.08);
+      padding: 10px 12px;
+      border: 1px solid rgba(59, 130, 246, 0.2);
+    }
+
+    .robot-card h4 {
+      margin: 0 0 6px;
+      font-size: 0.95rem;
+      font-family: "JetBrains Mono", monospace;
+      color: var(--accent);
+    }
+
+    .robot-card dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 10px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.8rem;
+      color: #cbd5ff;
+    }
+
+    .robot-card dt {
+      color: var(--muted);
+    }
+
+    .robot-card dd {
+      margin: 0;
+      word-break: break-word;
+    }
+
+    #status {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-top: 6px;
+    }
+
     .badge {
-        display: inline-block;
-        padding: 2px 6px;
-        border-radius: 999px;
-        font-size: 0.75rem;
-        background: #edf2ff;
-        border: 1px solid #c5d0ff;
-        color: #2c3a78;
-        margin-right: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(59, 130, 246, 0.12);
+      color: #cbd5ff;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.85rem;
     }
-    tr.selected {
-        background: #e9f2ff;
+
+    .badge.gold {
+      background: rgba(250, 204, 21, 0.12);
+      color: #fde68a;
     }
-    tbody tr {
-        cursor: pointer;
+
+    a {
+      color: var(--accent);
     }
-    .robot {
-        cursor: pointer;
+
+    #robotSelect {
+      width: 100%;
+      margin-top: 6px;
+      background: #1f2540;
+      border: 1px solid #283059;
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.92rem;
+      font-family: "Inter", "Segoe UI", sans-serif;
     }
-    .robot.selected {
-        box-shadow: 0 0 0 3px var(--panel-bg), 0 0 0 6px #ffbf69;
+
+    #robotSelect:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
     }
-    .robot .arrow {
-        pointer-events: none;
+
+    .follow-btn {
+      background: #1f2540;
+      border: 1px solid #283059;
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.84rem;
+      transition: background 0.2s ease, transform 0.1s ease;
+      width: 100%;
     }
-    #robotDetailBody {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        font-size: 0.88rem;
+
+    .follow-btn:hover {
+      background: #273063;
     }
-    .detail-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 8px 12px;
+
+    .follow-btn:active {
+      transform: translateY(1px);
     }
-    .detail-grid div strong {
-        display: block;
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--text-muted);
-        margin-bottom: 2px;
-    }
-    .detail-section {
-        margin-top: 8px;
-    }
-    .detail-section h3 {
-        margin: 0 0 4px;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-muted);
-    }
-    .detail-section pre {
-        margin: 0;
-        background: #f7f9ff;
-        padding: 6px;
-        border-radius: 6px;
-        font-size: 0.82rem;
-        line-height: 1.35;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-    .cell.selected-cell::before {
-        content: '';
-        position: absolute;
-        inset: 2px;
-        border: 2px solid #ffbf69;
-        border-radius: 6px;
-        pointer-events: none;
-    }
-    .detail-placeholder {
-        color: var(--text-muted);
-        font-size: 0.9rem;
-    }
-</style>
+  </style>
 </head>
 <body>
-<h1>CPR Simulation Grid Viewer</h1>
-<p>Load <code>simulation_log.txt</code> to replay robot movement on the 20?20 board with colored tokens and orientation arrows.</p>
-<input type="file" id="fileInput" accept=".txt">
-<div id="statusMessage">No log loaded.</div>
-<div id="viewer" style="display:none;">
-    <div id="leftColumn">
-        <div id="gridPanel">
-            <div id="gridHeader">
-                <h2>Grid</h2>
-                <div class="legend">
-                    <span><i style="background: var(--group-a);"></i>Group A</span>
-                    <span><i style="background: var(--group-b);"></i>Group B</span>
-                    <span><i class="gold"></i>Gold</span>
-                    <span><i class="deposit"></i>Deposit</span>
-                </div>
-            </div>
-            <div id="gridBoard">
-                <div id="gridBoard-inner"></div>
-            </div>
-        </div>
-        <div class="panel">
-            <div id="controlsRow">
-                <label for="stepSlider">Step:</label>
-                <input type="range" id="stepSlider" min="0" max="0" value="0">
-                <span id="stepLabel">0 / 0</span>
-                <button class="secondary" id="playPause">Play</button>
-                <label for="speedSelect">Speed:</label>
-                <select id="speedSelect">
-                    <option value="1200">1x</option>
-                    <option value="600">2x</option>
-                    <option value="300">4x</option>
-                    <option value="150">8x</option>
-                </select>
-            </div>
-            <div id="summary" class="flex-col"></div>
-        </div>
-    </div>
-    <div id="rightColumn">
-        <div class="panel" style="max-height: 320px; overflow:auto;">
-            <h2>Robots</h2>
-            <table>
-                <thead>
-                    <tr><th>ID</th><th>Group</th><th>Role</th><th>Pos</th><th>Facing</th></tr>
-                </thead>
-                <tbody id="robotTable"></tbody>
-            </table>
-        </div>
-        <div class="panel" id="robotDetailsPanel" style="max-height: 340px; overflow:auto;">
-            <h2>Robot Details</h2>
-            <div id="robotDetailBody" class="detail-placeholder">Select a robot to inspect its state and planner context.</div>
-        </div>
-        <div class="panel">
-            <h2>Gold</h2>
-            <div id="goldList" class="flex-col"></div>
-        </div>
-    </div>
-</div>
-<script>
-(function(){
-    const fileInput = document.getElementById('fileInput');
-    const statusMessage = document.getElementById('statusMessage');
-    const viewer = document.getElementById('viewer');
-    const stepSlider = document.getElementById('stepSlider');
-    const stepLabel = document.getElementById('stepLabel');
-    const playPause = document.getElementById('playPause');
-    const speedSelect = document.getElementById('speedSelect');
-    const gridInner = document.getElementById('gridBoard-inner');
-    const summaryDiv = document.getElementById('summary');
-    const robotTable = document.getElementById('robotTable');
-    const goldList = document.getElementById('goldList');
-    const robotDetailsPanel = document.getElementById('robotDetailsPanel');
-    const robotDetailBody = document.getElementById('robotDetailBody');
+  <main>
+    <header>
+      <h1>CPR Paxos Simulation Viewer</h1>
+      <p id="instructions">
+        1) Run <code>python3 main.py --ticks 200 --print-every 20</code> (or any settings you like).<br />
+        2) The run generates <code>frames.json</code> and <code>log.txt</code>. 3) Refresh this page to animate the latest run — the status footer shows the timestamp of the loaded frames. Click any grid cell to inspect the robots stationed there.
+      </p>
+    </header>
 
-    let gridSize = 20;
-    let deposits = {A: {x:0, y:0}, B: {x:19, y:19}};
-    let steps = [];
-    let animationTimer = null;
-    let cellMap = new Map();
-    let currentStep = null;
+    <section id="viewer" class="panel">
+      <div id="controls">
+        <button id="playBtn">Play ▶</button>
+        <button id="stepBack">‹ Prev</button>
+        <button id="stepForward">Next ›</button>
+        <label>Speed
+          <select id="speedSelect">
+            <option value="800">0.8s</option>
+            <option value="400" selected>0.4s</option>
+            <option value="200">0.2s</option>
+            <option value="120">0.12s</option>
+          </select>
+        </label>
+        <input type="range" id="frameSlider" min="0" max="0" value="0" />
+        <span id="frameInfo">Frame 0 / 0</span>
+      </div>
+
+      <div id="boardWrapper">
+        <div id="grid"></div>
+        <aside id="sidebar">
+          <div id="scoreboard">
+            <strong id="scoreLine">Score A=0 • B=0 • Gold=0</strong>
+            <span class="badge" id="stepBadge">Step 0</span>
+            <span class="badge gold" id="goldBadge">Gold: 0 cells</span>
+          </div>
+          <div>
+            <h3 style="margin: 10px 0 6px;">Engine events</h3>
+            <div id="logs">Waiting for frames…</div>
+          </div>
+          <div>
+            <h3 style="margin: 10px 0 6px;">Robot inspector</h3>
+            <select id="robotSelect">
+              <option value="">— Select robot —</option>
+            </select>
+            <div id="robotDetails" style="margin-top: 10px;">Select a robot from the list or click a cell.</div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <div id="status">Loading frames.json…</div>
+  </main>
+
+  <script>
+    const gridEl = document.getElementById("grid");
+    const playBtn = document.getElementById("playBtn");
+    const stepBackBtn = document.getElementById("stepBack");
+    const stepForwardBtn = document.getElementById("stepForward");
+    const speedSelect = document.getElementById("speedSelect");
+    const frameSlider = document.getElementById("frameSlider");
+    const frameInfo = document.getElementById("frameInfo");
+    const statusEl = document.getElementById("status");
+    const logsEl = document.getElementById("logs");
+    const robotSelect = document.getElementById("robotSelect");
+    const robotDetailsEl = document.getElementById("robotDetails");
+    const scoreLine = document.getElementById("scoreLine");
+    const stepBadge = document.getElementById("stepBadge");
+    const goldBadge = document.getElementById("goldBadge");
+
+    let frames = [];
+    let cells = [];
+    let current = 0;
+    let playing = false;
+    let timer = null;
+    let width = 0;
+    let height = 0;
+    let robotsByCell = new Map();
+    let robotLookup = new Map();
+    let selectedCellKey = null;
     let selectedRobotId = null;
-    let robotDomMap = new Map();
-    let robotRowMap = new Map();
+    let lastCellRobots = null;
 
-    fileInput.addEventListener('change', (event) => {
-        const file = event.target.files && event.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const text = e.target.result;
-            try {
-                steps = parseLog(text);
-                if (!steps.length) throw new Error('No steps found in log');
-                buildGrid(gridSize);
-                viewer.style.display = 'grid';
-                statusMessage.textContent = `${steps.length} steps loaded for grid ${gridSize}×${gridSize}.`;
-                stepSlider.max = steps.length - 1;
-                updateStep(0);
-            } catch (err) {
-                viewer.style.display = 'none';
-                statusMessage.textContent = `Failed to parse log: ${err.message}`;
-                console.error(err);
-            }
-        };
-        reader.readAsText(file);
-    });
+    let generatedAt = null;
+    let runConfig = null;
 
-    stepSlider.addEventListener('input', () => {
-        stopAnimation();
-        updateStep(Number(stepSlider.value));
-    });
-
-    playPause.addEventListener('click', () => {
-        if (animationTimer) {
-            stopAnimation();
+    fetch("frames.json", { cache: "no-store" })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`Could not load frames.json (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) {
+          frames = data;
+        } else if (data && Array.isArray(data.frames)) {
+          frames = data.frames;
+          generatedAt = data.generated_at || (data.meta && data.meta.generated_at) || null;
+          runConfig = data.config || (data.meta && data.meta.config) || null;
         } else {
-            startAnimation();
+          throw new Error("frames.json is empty. Run the simulation first.");
         }
+        if (!frames || frames.length === 0) {
+          throw new Error("frames.json is empty. Run the simulation first.");
+        }
+        populateRobotSelect(frames[0].robots || []);
+        selectedRobotId = null;
+        robotSelect.value = "";
+        selectedCellKey = null;
+        width = frames[0].width || 20;
+        height = frames[0].height || 20;
+        buildGrid(width, height);
+        frameSlider.max = frames.length - 1;
+        renderFrame(0);
+        const timeLabel = generatedAt ? formatTimestamp(generatedAt) : null;
+        const seedLabel =
+          runConfig && Object.prototype.hasOwnProperty.call(runConfig, "seed")
+            ? ` • seed ${runConfig.seed}`
+            : "";
+        statusEl.textContent = `Loaded ${frames.length} frames${seedLabel}${
+          timeLabel ? ` • generated ${timeLabel}` : ""
+        }.`;
+      })
+      .catch((err) => {
+        statusEl.textContent = err.message;
+        logsEl.textContent = "No frames available.";
+      });
+
+    function buildGrid(w, h) {
+      gridEl.style.gridTemplateColumns = `repeat(${w}, var(--cell-size))`;
+      gridEl.style.gridTemplateRows = `repeat(${h}, var(--cell-size))`;
+      gridEl.innerHTML = "";
+      cells = [];
+      for (let y = 0; y < h; y++) {
+        const row = [];
+        for (let x = 0; x < w; x++) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          cell.dataset.pos = `${x},${y}`;
+          cell.addEventListener("click", handleCellClick);
+          gridEl.appendChild(cell);
+          row.push(cell);
+        }
+        cells.push(row);
+      }
+    }
+
+    function populateRobotSelect(robots) {
+      if (!robotSelect) return;
+      const ordered = [...robots].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+      const options = ['<option value="">— Select robot —</option>'];
+      for (const robot of ordered) {
+        options.push(
+          `<option value="${robot.id}">R${robot.id} • Team ${robot.team}</option>`
+        );
+      }
+      robotSelect.innerHTML = options.join("");
+    }
+
+    function renderFrame(index) {
+      if (!frames.length) return;
+      const frame = frames[index];
+      current = index;
+      frameSlider.value = index;
+      frameInfo.textContent = `Frame ${index} / ${frames.length - 1}`;
+      scoreLine.textContent = `Score A=${frame.scores.A} • B=${frame.scores.B} • Gold=${frame.gold.length}`;
+      stepBadge.textContent = `Step ${frame.step}`;
+      goldBadge.textContent = `Gold: ${frame.gold.length} cells`;
+
+      const depositMap = new Map(
+        Object.entries(frame.deposits).map(([team, pos]) => [pos.join(","), team])
+      );
+      const goldSet = new Set(frame.gold.map((pos) => pos.join(",")));
+      const robotStats = new Map();
+      robotsByCell = new Map();
+      robotLookup = new Map();
+
+      for (const robot of frame.robots) {
+        const key = robot.pos.join(",");
+        robotLookup.set(robot.id, robot);
+        if (!robotsByCell.has(key)) {
+          robotsByCell.set(key, []);
+        }
+        robotsByCell.get(key).push(robot);
+        if (!robotStats.has(key)) {
+          robotStats.set(key, { A: 0, B: 0, carrying: false });
+        }
+        const entry = robotStats.get(key);
+        entry[robot.team] += 1;
+        if (robot.carrying) entry.carrying = true;
+      }
+
+      if (selectedCellKey && !robotsByCell.has(selectedCellKey)) {
+        selectedCellKey = null;
+      }
+      lastCellRobots = selectedCellKey ? robotsByCell.get(selectedCellKey) || null : null;
+      const highlightKey = getHighlightKey();
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const cell = cells[y][x];
+          cell.className = "cell";
+          const key = `${x},${y}`;
+          const parts = [];
+
+          if (depositMap.has(key)) {
+            const team = depositMap.get(key);
+            cell.classList.add(team === "A" ? "depositA" : "depositB");
+            parts.push(team === "A" ? "D₁" : "D₂");
+          }
+
+          if (goldSet.has(key)) {
+            cell.classList.add("gold");
+            parts.push("★");
+          }
+
+          if (robotStats.has(key)) {
+            const { A, B, carrying } = robotStats.get(key);
+            if (A) {
+              cell.classList.add("teamA");
+              parts.push(A > 1 ? `A×${A}` : "A");
+            }
+            if (B) {
+              cell.classList.add("teamB");
+              parts.push(B > 1 ? `B×${B}` : "B");
+            }
+            if (carrying) {
+              cell.classList.add("carrying");
+            }
+          }
+
+          if (highlightKey && key === highlightKey) {
+            cell.classList.add("selected");
+          }
+
+          cell.innerHTML = parts.length ? parts.join("<br>") : "";
+        }
+      }
+
+      if (selectedRobotId != null) {
+        const tracked = robotLookup.get(selectedRobotId);
+        if (tracked) {
+          renderTrackedRobot(tracked);
+        } else {
+          robotDetailsEl.textContent = `Robot R${selectedRobotId} not present in this frame.`;
+        }
+      } else if (selectedCellKey && lastCellRobots && lastCellRobots.length) {
+        renderRobotChoices(lastCellRobots);
+      } else if (selectedCellKey) {
+        robotDetailsEl.textContent = "No robots on this cell.";
+      } else {
+        robotDetailsEl.textContent = "Select a robot from the list or click a cell.";
+      }
+
+      logsEl.textContent =
+        frame.logs && frame.logs.length
+          ? frame.logs.slice(-10).join("\n")
+          : "No engine events recorded for this frame.";
+    }
+
+    function formatTimestamp(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString();
+    }
+
+    function getHighlightKey() {
+      if (selectedRobotId != null) {
+        const tracked = robotLookup.get(selectedRobotId);
+        if (tracked) {
+          return tracked.pos.join(",");
+        }
+      }
+      if (selectedCellKey) {
+        return selectedCellKey;
+      }
+      return null;
+    }
+
+    function handleCellClick(event) {
+      pause();
+      const key = event.currentTarget.dataset.pos;
+      selectedCellKey = key;
+      selectedRobotId = null;
+      if (robotSelect) {
+        robotSelect.value = "";
+      }
+      renderFrame(current);
+    }
+
+    function renderRobotChoices(robots) {
+      if (!robots || !robots.length) {
+        robotDetailsEl.textContent = "No robots on this cell.";
+        return;
+      }
+      const ordered = [...robots].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+      robotDetailsEl.innerHTML = ordered
+        .map((robot) => buildRobotCard(robot, true))
+        .join("");
+      robotDetailsEl.querySelectorAll("[data-follow]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = Number(btn.dataset.follow);
+          if (!Number.isNaN(id)) {
+            selectedRobotId = id;
+            selectedCellKey = null;
+            if (robotSelect) {
+              robotSelect.value = String(id);
+            }
+            renderFrame(current);
+          }
+        });
+      });
+    }
+
+    function renderTrackedRobot(robot) {
+      robotDetailsEl.innerHTML = buildRobotCard(robot, false);
+    }
+
+    function buildRobotCard(robot, showFollow) {
+      const lines = [
+        ["Position", formatPos(robot.pos)],
+        ["Facing", robot.facing],
+        ["Control", robot.control_state || "—"],
+        ["Execution", robot.execution_state || "—"],
+        ["Paxos", robot.paxos_state || "—"],
+        ["Proposal", robot.proposal_id ?? "—"],
+        ["Leader", robot.leader_id ?? "—"],
+        ["Carrying with", robot.carrying_with ?? "—"],
+        ["Assigned gold", formatPos(robot.assigned_gold)],
+        ["Partner", robot.assigned_partner ?? "—"],
+        ["Target cell", formatPos(robot.target_gold_for_consensus)],
+        ["Known gold", formatList(robot.known_gold)],
+        ["Promises", formatList(robot.promises_received)],
+        ["Awaiting ack", formatObject(robot.awaiting_ack)],
+        ["Timers", formatObject(robot.timers)],
+        [
+          "Pending",
+          robot.pending_broadcast ? JSON.stringify(robot.pending_broadcast) : "—",
+        ],
+        ["Consensus retries", robot.consensus_retries ?? 0],
+      ];
+
+      const body = lines
+        .map(
+          ([label, value]) =>
+            `<dt>${label}</dt><dd>${escapeHtml(formatValue(value))}</dd>`
+        )
+        .join("");
+
+      const followButton = showFollow
+        ? `<div style="margin-top:8px;"><button class="follow-btn" data-follow="${robot.id}">Follow R${robot.id}</button></div>`
+        : "";
+
+      return `
+        <div class="robot-card">
+          <h4>R${robot.id} • Team ${robot.team}</h4>
+          <dl>${body}</dl>
+          ${followButton}
+        </div>
+      `;
+    }
+
+    function formatPos(pos) {
+      if (!pos || !Array.isArray(pos)) return "—";
+      return `(${pos.join(", ")})`;
+    }
+
+    function formatList(list) {
+      if (!Array.isArray(list) || !list.length) return "—";
+      if (Array.isArray(list[0])) {
+        return list.map(formatPos).join(", ");
+      }
+      return list.join(", ");
+    }
+
+    function formatObject(obj) {
+      if (!obj || !Object.keys(obj).length) return "—";
+      return Object.entries(obj)
+        .map(([key, value]) => `${key}: ${formatValue(value)}`)
+        .join(" | ");
+    }
+
+    function formatValue(value) {
+      if (value == null || value === "—") return "—";
+      if (Array.isArray(value)) {
+        return formatList(value);
+      }
+      if (typeof value === "object") {
+        return formatObject(value);
+      }
+      return String(value);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function play() {
+      if (playing || !frames.length) return;
+      playing = true;
+      playBtn.textContent = "Pause ❚❚";
+      const interval = Number(speedSelect.value);
+      timer = setInterval(() => {
+        if (current >= frames.length - 1) {
+          pause();
+          return;
+        }
+        renderFrame(current + 1);
+      }, interval);
+    }
+
+    function pause() {
+      playing = false;
+      playBtn.textContent = "Play ▶";
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+
+    playBtn.addEventListener("click", () => {
+      if (playing) {
+        pause();
+      } else {
+        play();
+      }
     });
 
-    function startAnimation() {
-        playPause.textContent = 'Pause';
-        const speed = Number(speedSelect.value);
-        animationTimer = setInterval(() => {
-            let next = Number(stepSlider.value) + 1;
-            if (next >= steps.length) next = 0;
-            stepSlider.value = next;
-            updateStep(next, true);
-        }, speed);
-    }
+    stepBackBtn.addEventListener("click", () => {
+      pause();
+      if (current > 0) {
+        renderFrame(current - 1);
+      }
+    });
 
-    function stopAnimation() {
-        if (animationTimer) {
-            clearInterval(animationTimer);
-            animationTimer = null;
-            playPause.textContent = 'Play';
-        }
-    }
+    stepForwardBtn.addEventListener("click", () => {
+      pause();
+      if (current < frames.length - 1) {
+        renderFrame(current + 1);
+      }
+    });
 
-    function buildGrid(size) {
-        gridInner.innerHTML = '';
-        gridInner.style.gridTemplateColumns = `repeat(${size}, var(--cell-size))`;
-        gridInner.style.gridTemplateRows = `repeat(${size}, var(--cell-size))`;
-        cellMap = new Map();
-        for (let y = 0; y < size; y++) {
-            for (let x = 0; x < size; x++) {
-                const cell = document.createElement('div');
-                cell.className = 'cell';
-                cell.dataset.x = x;
-                cell.dataset.y = y;
-                gridInner.appendChild(cell);
-                cellMap.set(`${x},${y}`, cell);
-            }
-        }
-    }
+    frameSlider.addEventListener("input", (event) => {
+      pause();
+      renderFrame(Number(event.target.value));
+    });
 
-    function updateStep(index, fromAuto = false) {
-        const step = steps[index];
-        currentStep = step;
-        if (selectedRobotId !== null && !step.robots.some(r => r.id === selectedRobotId)) {
-            selectedRobotId = null;
-        }
-        stepSlider.value = index;
-        stepLabel.textContent = `${index} / ${steps.length - 1}`;
-        drawStep(step);
-        renderSummary(step);
-        renderRobotTable(step);
-        renderGold(step);
-        renderRobotDetails(getSelectedRobot());
-    }
+    speedSelect.addEventListener("change", () => {
+      if (playing) {
+        pause();
+        play();
+      }
+    });
 
-    function renderSummary(step) {
-        summaryDiv.innerHTML = '';
-        const line1 = document.createElement('div');
-        line1.innerHTML = `<span class="badge">Step ${step.index}</span>` +
-            (step.score ? `Score A=${step.score.A} &nbsp; B=${step.score.B}` : 'Score unavailable');
-        summaryDiv.appendChild(line1);
-
-        const actions = document.createElement('div');
-        actions.innerHTML = `<strong>Actions:</strong> ${step.actions.length ? step.actions.join('; ') : 'None logged'}`;
-        summaryDiv.appendChild(actions);
-
-        const coords = document.createElement('div');
-        coords.innerHTML = `<strong>Coordination:</strong> ${step.coord.length ? step.coord.join('; ') : 'None logged'}`;
-        summaryDiv.appendChild(coords);
-    }
-
-    function renderRobotTable(step) {
-        robotTable.innerHTML = '';
-        robotRowMap = new Map();
-        const fragment = document.createDocumentFragment();
-        const sorted = [...step.robots].sort((a,b) => a.id - b.id);
-        for (const robot of sorted) {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${robot.id}</td><td>${robot.group}</td><td>${robot.role}</td><td>(${robot.x}, ${robot.y})</td><td>${robot.facing}</td>`;
-            tr.dataset.robotId = robot.id;
-            if (robot.details && robot.details.length) {
-                tr.title = robot.details.join('\n');
-            }
-            tr.addEventListener('click', () => selectRobot(robot.id));
-            fragment.appendChild(tr);
-            robotRowMap.set(robot.id, tr);
-        }
-        robotTable.appendChild(fragment);
-        applySelectionHighlight();
-    }
-
-    function renderGold(step) {
-        goldList.innerHTML = '';
-        if (!step.gold.length) {
-            goldList.textContent = 'No gold reported this step.';
-            return;
-        }
-        for (const gold of step.gold) {
-            const div = document.createElement('div');
-            div.textContent = `(${gold.x}, ${gold.y}) × ${gold.amount}`;
-            goldList.appendChild(div);
-        }
-    }
-
-    function getSelectedRobot() {
-        if (!currentStep || selectedRobotId === null) return null;
-        return currentStep.robots.find(r => r.id === selectedRobotId) || null;
-    }
-
-    function selectRobot(id) {
-        selectedRobotId = (selectedRobotId === id) ? null : id;
-        applySelectionHighlight();
-        renderRobotDetails(getSelectedRobot());
-    }
-
-    function applySelectionHighlight() {
-        robotRowMap.forEach((row, id) => {
-            row.classList.toggle('selected', id === selectedRobotId);
-        });
-        robotDomMap.forEach((badge, id) => {
-            badge.classList.toggle('selected', id === selectedRobotId);
-        });
-        for (const cell of cellMap.values()) {
-            cell.classList.remove('selected-cell');
-        }
-        const robot = getSelectedRobot();
-        if (robot) {
-            const cell = cellMap.get(`${robot.x},${robot.y}`);
-            if (cell) cell.classList.add('selected-cell');
-        }
-    }
-
-    function renderRobotDetails(robot) {
-        if (robotDetailsPanel) {
-            robotDetailsPanel.scrollTop = 0;
-        }
-        if (!robot) {
-            robotDetailBody.textContent = 'Select a robot to inspect its state and planner context.';
-            robotDetailBody.classList.add('detail-placeholder');
-            return;
-        }
-        robotDetailBody.classList.remove('detail-placeholder');
-        robotDetailBody.innerHTML = '';
-
-        const heading = document.createElement('div');
-        heading.innerHTML = `<div class="badge">Robot ${robot.id}</div> Team ${robot.group}`;
-        robotDetailBody.appendChild(heading);
-
-        const meta = document.createElement('div');
-        meta.className = 'detail-grid';
-        const carrying = robot.carryingMate != null ? `With R${robot.carryingMate}` : 'No';
-        const target = robot.targetGold ? `(${robot.targetGold.x}, ${robot.targetGold.y})` : '—';
-        const tasksLine = (robot.details || []).find(item => item.startsWith('Tasks:')) || null;
-        const tasks = tasksLine ? tasksLine.replace(/^Tasks:\s*/, '') : '—';
-        meta.innerHTML = `
-            <div><strong>Role</strong><div>${robot.role}</div></div>
-            <div><strong>Facing</strong><div>${robot.facing}</div></div>
-            <div><strong>Position</strong><div>(${robot.x}, ${robot.y})</div></div>
-            <div><strong>Carrying</strong><div>${carrying}</div></div>
-            <div><strong>Target</strong><div>${target}</div></div>
-            <div><strong>Tasks</strong><div>${tasks}</div></div>
-        `;
-        robotDetailBody.appendChild(meta);
-
-        const detailGroups = groupDetailLines(robot.details).filter(({ key }) => key !== 'Tasks');
-        if (detailGroups.length) {
-            detailGroups.forEach(({ key, values }) => {
-                const section = document.createElement('div');
-                section.className = 'detail-section';
-                const title = document.createElement('h3');
-                title.textContent = key;
-                const body = document.createElement('pre');
-                body.textContent = values.join('\n');
-                section.appendChild(title);
-                section.appendChild(body);
-                robotDetailBody.appendChild(section);
-            });
+    if (robotSelect) {
+      robotSelect.addEventListener("change", (event) => {
+        pause();
+        const value = event.target.value;
+        if (!value) {
+          selectedRobotId = null;
+          selectedCellKey = null;
         } else {
-            const empty = document.createElement('div');
-            empty.className = 'detail-section detail-placeholder';
-            empty.textContent = 'No detailed log entries captured for this robot on this tick.';
-            robotDetailBody.appendChild(empty);
+          selectedRobotId = Number(value);
+          selectedCellKey = null;
         }
+        renderFrame(current);
+      });
     }
 
-    function groupDetailLines(lines = []) {
-        const grouped = new Map();
-        for (const line of lines) {
-            const text = line.trim();
-            if (!text) continue;
-            const idx = text.indexOf(':');
-            if (idx === -1) {
-                if (!grouped.has('Notes')) grouped.set('Notes', []);
-                grouped.get('Notes').push(text);
-                continue;
-            }
-            const key = text.slice(0, idx).trim();
-            const value = text.slice(idx + 1).trim();
-            if (!grouped.has(key)) grouped.set(key, []);
-            grouped.get(key).push(value);
-        }
-        return Array.from(grouped.entries()).map(([key, values]) => ({ key, values }));
-    }
-
-    const offsetPatterns = [
-        {x: 0.5, y: 0.5},
-        {x: 0.2, y: 0.8},
-        {x: 0.8, y: 0.2},
-        {x: 0.8, y: 0.8},
-        {x: 0.2, y: 0.2},
-        {x: 0.5, y: 0.2},
-        {x: 0.2, y: 0.5},
-        {x: 0.8, y: 0.5},
-        {x: 0.5, y: 0.8}
-    ];
-
-    function drawStep(step) {
-        robotDomMap = new Map();
-        for (const cell of cellMap.values()) {
-            cell.innerHTML = '';
-            cell.classList.remove('deposit', 'selected-cell');
-        }
-        const depA = cellMap.get(`${deposits.A.x},${deposits.A.y}`);
-        const depB = cellMap.get(`${deposits.B.x},${deposits.B.y}`);
-        if (depA) depA.classList.add('deposit');
-        if (depB) depB.classList.add('deposit');
-
-        for (const gold of step.gold) {
-            const cell = cellMap.get(`${gold.x},${gold.y}`);
-            if (!cell) continue;
-            const marker = document.createElement('div');
-            marker.className = 'gold-marker';
-            marker.textContent = gold.amount;
-            cell.appendChild(marker);
-        }
-
-        const occupancy = new Map();
-        for (const robot of step.robots) {
-            const key = `${robot.x},${robot.y}`;
-            if (!occupancy.has(key)) occupancy.set(key, []);
-            occupancy.get(key).push(robot);
-        }
-
-        for (const [key, robots] of occupancy.entries()) {
-            const cell = cellMap.get(key);
-            if (!cell) continue;
-            robots.sort((a,b) => a.id - b.id);
-            robots.forEach((robot, idx) => {
-                const badge = document.createElement('div');
-                badge.className = 'robot';
-                badge.classList.add(`group-${robot.group}`);
-                if (robot.role === 'TRANSPORTER') badge.classList.add('transporter');
-                badge.textContent = robot.id;
-                badge.dataset.robotId = robot.id;
-                const offset = offsetPatterns[idx] || {x: 0.5, y: 0.5};
-                badge.style.left = `${offset.x * 100}%`;
-                badge.style.top = `${offset.y * 100}%`;
-                badge.style.transform = 'translate(-50%, -50%)';
-                const tooltip = [`Robot ${robot.id} (Group ${robot.group})`, `Role: ${robot.role}`, `Facing: ${robot.facing}`];
-                if (robot.details && robot.details.length) tooltip.push(...robot.details);
-                badge.title = tooltip.join('\n');
-                const arrow = document.createElement('span');
-                arrow.className = `arrow ${robot.facing}`;
-                badge.appendChild(arrow);
-                badge.addEventListener('click', (event) => {
-                    event.stopPropagation();
-                    selectRobot(robot.id);
-                });
-                robotDomMap.set(robot.id, badge);
-                cell.appendChild(badge);
-            });
-        }
-        applySelectionHighlight();
-    }
-
-    function parseLog(text) {
-        gridSize = 20;
-        deposits = {A: {x: 0, y: 0}, B: {x: 19, y: 19}};
-
-        const sizeMatch = text.match(/Grid Size:\s*(\d+)x(\d+)/);
-        if (sizeMatch) {
-            gridSize = Number(sizeMatch[1]);
-        }
-        const depositMatch = text.match(/Deposit A:\s*\((\d+),\s*(\d+)\),\s*Deposit B:\s*\((\d+),\s*(\d+)\)/);
-        if (depositMatch) {
-            deposits = {
-                A: {x: Number(depositMatch[1]), y: Number(depositMatch[2])},
-                B: {x: Number(depositMatch[3]), y: Number(depositMatch[4])}
-            };
-        }
-
-        const stepRegex = /--- STEP\s+(\d+)\s+START ---([\s\S]*?)(?=--- STEP|=== SIMULATION COMPLETE ===|$)/g;
-        const steps = [];
-        let match;
-        while ((match = stepRegex.exec(text)) !== null) {
-            const stepIndex = Number(match[1]);
-            const block = match[2].trim();
-            const stepData = parseStepBlock(stepIndex, block);
-            steps.push(stepData);
-        }
-
-        const tailActions = text.match(/Actions taken:\s*([\s\S]*?)(?:Coordination attempts:|$)/);
-        const tailCoord = text.match(/Coordination attempts:\s*([\s\S]*?)(?:\n\n|$)/);
-        if (steps.length && tailActions) {
-            steps[steps.length - 1].actions = tailActions[1]
-                .split(/\n/)
-                .map(line => line.replace(/^\s*-?\s*/, '').trim())
-                .filter(Boolean);
-        }
-        if (steps.length && tailCoord) {
-            steps[steps.length - 1].coord = tailCoord[1]
-                .split(/\n/)
-                .map(line => line.replace(/^\s*-?\s*/, '').trim())
-                .filter(Boolean);
-        }
-
-        return steps;
-    }
-
-    function parseStepBlock(index, block) {
-        const lines = block.split('\n');
-        const robots = [];
-        const actions = [];
-        const coord = [];
-        let score = null;
-        let gold = [];
-
-        for (let i = 0; i < lines.length; i++) {
-            const raw = lines[i];
-            const line = raw.trim();
-            if (!line) continue;
-            if (line.startsWith('Current Score:')) {
-                const scoreMatch = line.match(/Current Score:\s*A=(\d+),\s*B=(\d+)/);
-                if (scoreMatch) score = {A: Number(scoreMatch[1]), B: Number(scoreMatch[2])};
-            } else if (line.startsWith('Gold on map')) {
-                let goldStr = line.substring(line.indexOf(':') + 1).trim();
-                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
-                    goldStr += ' ' + lines[++i].trim();
-                }
-                gold = parseGoldList(goldStr);
-            } else if (line.startsWith('Actions taken:')) {
-                const tail = line.replace('Actions taken:', '').trim();
-                if (tail) actions.push(tail);
-                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
-                    actions.push(lines[++i].trim());
-                }
-            } else if (line.startsWith('Coordination attempts:')) {
-                const tail = line.replace('Coordination attempts:', '').trim();
-                if (tail) coord.push(tail);
-                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
-                    coord.push(lines[++i].trim());
-                }
-            } else if (line.startsWith('Robot')) {
-                if (!line.includes('(Group')) {
-                    if (robots.length) {
-                        robots[robots.length - 1].details.push(line);
-                    } else {
-                        actions.push(line);
-                    }
-                    continue;
-                }
-                const robot = parseRobotLine(line);
-                if (!robot) {
-                    console.warn('Skipping unrecognized robot line:', line);
-                    continue;
-                }
-                const details = [];
-                while (i + 1 < lines.length && lines[i + 1].startsWith('  ')) {
-                    details.push(lines[++i].trim());
-                }
-                robot.details = details;
-                robots.push(robot);
-            }
-        }
-
-        return { index, score, gold, robots, actions, coord };
-    }
-
-    function parseGoldList(text) {
-        if (!text || text.toLowerCase().startsWith('none')) return [];
-        return text.split(',')
-            .map(entry => entry.trim())
-            .filter(Boolean)
-            .map(entry => {
-                const match = entry.match(/\((\d+),(\d+)\):G(\d+)/);
-                if (match) return {x: Number(match[1]), y: Number(match[2]), amount: Number(match[3])};
-                return null;
-            })
-            .filter(Boolean);
-    }
-
-    function parseRobotLine(line) {
-        const robotMatch = line.match(/Robot\s+(\d+)\s+\(Group\s+([AB])\):\s*pos=\(\s*(\d+),\s*(\d+)\)\s*facing=([NSEW])\s*\[(.*?)\](.*)/);
-        if (!robotMatch) {
-            return null;
-        }
-        const [, id, group, x, y, facing, roleRaw, extra] = robotMatch;
-        const role = roleRaw.trim();
-        const details = [];
-        let carryingMate = null;
-        let targetGold = null;
-        if (extra && extra.trim()) {
-            const extraTrim = extra.trim();
-            const carryMatch = extraTrim.match(/Carrying with R(\d+)/i);
-            if (carryMatch) carryingMate = Number(carryMatch[1]);
-            const targetMatch = extraTrim.match(/target_gold=\((\d+),\s*(\d+)\)/i);
-            if (targetMatch) {
-                targetGold = { x: Number(targetMatch[1]), y: Number(targetMatch[2]) };
-            }
-            details.push(extraTrim);
-        }
-        return {
-            id: Number(id),
-            group,
-            x: Number(x),
-            y: Number(y),
-            facing,
-            role,
-            details,
-            carryingMate,
-            targetGold
-        };
-    }
-})();
-</script>
+    document.addEventListener("keydown", (event) => {
+      if (!frames.length) return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        playing ? pause() : play();
+      } else if (event.code === "ArrowRight") {
+        event.preventDefault();
+        pause();
+        if (current < frames.length - 1) renderFrame(current + 1);
+      } else if (event.code === "ArrowLeft") {
+        event.preventDefault();
+        pause();
+        if (current > 0) renderFrame(current - 1);
+      }
+    });
+  </script>
 </body>
 </html>
