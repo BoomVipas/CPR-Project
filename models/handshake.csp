@@ -1,0 +1,182 @@
+-- ============================================================
+-- MILESTONE III CSP MODEL: Finder/Helper Handshake Protocol
+-- ============================================================
+-- Models the asynchronous handshake used in the simulator to
+-- coordinate a finder and helper robot for gold pickup.
+-- Verification goals:
+--   1. Deadlock/divergence freedom
+   --   2. Liveness: gold is picked up and deposited
+--   3. Safety: pickup only when both robots present
+--   4. Fairness: helper eventually selected
+--   5. Deterministic behaviour for finder/system
+--   6. Refinement against a simple specification
+-- ============================================================
+
+datatype RobotID = Finder | Helper1 | Helper2
+datatype GoldPos = Gold1 | Gold2
+datatype Index   = IDX0 | IDX1 | IDX2
+datatype Score   = Score0 | Score1
+
+RobotIDs      = {Finder, Helper1, Helper2}
+GoldPositions = {Gold1, Gold2}
+Indices       = {IDX0, IDX1, IDX2}
+Scores        = {Score0, Score1}
+
+-- Helper: record whether robots are at gold for safety assertions
+channel finder_at_gold : RobotID.GoldPos
+channel helper_at_gold : RobotID.GoldPos
+
+-- Handshake channels --------------------------------------------------------
+channel finder_offer    : RobotID.GoldPos.Index
+channel helper_response : RobotID.Index
+channel finder_ack      : RobotID.RobotID.Index
+channel helper_here     : RobotID.Index
+channel start_pickup    : Index
+
+-- Actions / observations ----------------------------------------------------
+channel move_to     : RobotID.GoldPos
+channel pickup      : GoldPos
+channel deposit     : Score
+channel found_gold  : RobotID.GoldPos
+channel timeout     : RobotID
+channel abort       : RobotID
+channel tick        : RobotID  -- abstract time tick for wait modelling
+
+nextIndex IDX0 = IDX1
+nextIndex IDX1 = IDX2
+nextIndex IDX2 = IDX0
+
+nextGold Gold1 = Gold2
+nextGold Gold2 = Gold1
+
+-- Finder process ------------------------------------------------------------
+
+FINDER(robot_id, gold_pos, idx) =
+    found_gold.robot_id.gold_pos ->
+    finder_at_gold.robot_id.gold_pos ->
+    finder_offer.robot_id.gold_pos.idx ->
+    WaitResponse(robot_id, gold_pos, idx)
+
+WaitResponse(robot_id, gold_pos, idx) =
+    helper_response?helper_id?index ->
+        (if index == idx then
+            finder_ack.robot_id.helper_id.idx ->
+            WaitHelperHere(robot_id, helper_id, gold_pos, idx)
+         else
+            WaitResponse(robot_id, gold_pos, idx))
+
+WaitHelperHere(robot_id, helper_id, gold_pos, idx) =
+    helper_here?helper_id?index ->
+        (if index == idx then
+            start_pickup.idx ->
+            pickup.gold_pos ->
+            TRANSPORT(robot_id, helper_id, gold_pos, idx)
+         else
+            WaitHelperHere(robot_id, helper_id, gold_pos, idx))
+
+TRANSPORT(robot_id, helper_id, gold_pos, idx) =
+    deposit.Score0 ->
+    FINDER(robot_id, nextGold(gold_pos), nextIndex(idx))
+
+-- Helper process with timeout modelling ------------------------------------
+
+HELPER(robot_id) =
+    finder_offer?finder_id?gold_pos?idx ->
+    helper_response.robot_id.idx ->
+    WaitAck(robot_id, finder_id, gold_pos, idx, 3)
+
+WaitAck(robot_id, finder_id, gold_pos, idx, 0) =
+    timeout.robot_id -> HELPER(robot_id)
+WaitAck(robot_id, finder_id, gold_pos, idx, n) =
+    (finder_ack?finder_id?robot_id?idx ->
+        move_to.robot_id.gold_pos ->
+        helper_at_gold.robot_id.gold_pos ->
+        helper_here.robot_id.idx ->
+        WaitStart(robot_id, gold_pos, idx, 3))
+    []
+    (finder_ack?finder_id?other_id?idx ->
+        (if other_id != robot_id then
+            abort.robot_id -> HELPER(robot_id)
+         else
+            WaitAck(robot_id, finder_id, gold_pos, idx, n)))
+    []
+    (tick.robot_id -> WaitAck(robot_id, finder_id, gold_pos, idx, n - 1))
+
+WaitStart(robot_id, gold_pos, idx, 0) =
+    timeout.robot_id -> HELPER(robot_id)
+WaitStart(robot_id, gold_pos, idx, n) =
+    (start_pickup?idx ->
+        pickup.gold_pos ->
+        TRANSPORT_HELPER(robot_id))
+    []
+    (tick.robot_id -> WaitStart(robot_id, gold_pos, idx, n - 1))
+
+TRANSPORT_HELPER(robot_id) =
+    deposit.Score0 ->
+    HELPER(robot_id)
+
+-- System composition --------------------------------------------------------
+
+SyncChannels = {| finder_offer, helper_response, finder_ack,
+                  helper_here, start_pickup, pickup, deposit,
+                  finder_at_gold, helper_at_gold |}
+
+SYSTEM =
+    FINDER(Finder, Gold1, IDX0)
+    [| SyncChannels |]
+    HELPER(Helper1)
+
+-- Specification for refinement ---------------------------------------------
+
+SPEC =
+    found_gold?f?g ->
+    pickup?g ->
+    deposit?s ->
+    SPEC
+
+-- Assertions ----------------------------------------------------------------
+
+assert FINDER(Finder, Gold1, IDX0) :[deterministic [F]]
+assert SYSTEM :[deterministic [FD]]
+assert SYSTEM :[deadlock free [F]]
+assert SYSTEM :[divergence free]
+assert SYSTEM |= <> pickup
+assert SYSTEM |= <> deposit
+assert SYSTEM |= <> finder_ack
+assert SYSTEM |= [] (pickup -> (finder_at_gold?Finder?Gold1 || finder_at_gold?Finder?Gold2))
+assert SYSTEM |= [] (pickup -> (helper_at_gold?Helper1?Gold1 || helper_at_gold?Helper1?Gold2))
+assert SPEC [T= SYSTEM
+assert SPEC [F= SYSTEM
+
+assert WaitResponse(Finder, Gold1, IDX0) :[divergence free]
+assert WaitAck(Helper1, Finder, Gold1, IDX0, 3) :[divergence free]
+
+-- Scenario 1: helper responds but times out without ACK
+SCENARIO_TIMEOUT =
+    FINDER(Finder, Gold1, IDX0)
+    [| {| finder_offer, helper_response |} |]
+    (helper_response.Helper1.IDX0 -> timeout.Helper1 -> HELPER(Helper1))
+
+assert SCENARIO_TIMEOUT :[deadlock free]
+
+-- Scenario 2: two helpers respond; finder must remain safe
+SCENARIO_MULTI_HELPER =
+    FINDER(Finder, Gold1, IDX0)
+    [| {| finder_offer, helper_response, finder_ack |} |]
+    (HELPER(Helper1) ||| HELPER(Helper2))
+
+assert SCENARIO_MULTI_HELPER :[deadlock free]
+
+-- Scenario 3: helper never receives ack (loss)
+HELPER_WITH_LOSS(robot_id) =
+    finder_offer?finder_id?gold_pos?idx ->
+    helper_response.robot_id.idx ->
+    timeout.robot_id ->
+    HELPER(robot_id)
+
+SCENARIO_MESSAGE_LOSS =
+    FINDER(Finder, Gold1, IDX0)
+    [| {| finder_offer, helper_response |} |]
+    HELPER_WITH_LOSS(Helper1)
+
+assert SCENARIO_MESSAGE_LOSS :[deadlock free]

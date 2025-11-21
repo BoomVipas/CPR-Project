@@ -346,6 +346,104 @@
     .follow-btn:active {
       transform: translateY(1px);
     }
+
+    #pickupChart {
+      width: 100%;
+      height: 220px;
+      background: #0b0f1c;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      display: block;
+    }
+
+    #telemetry {
+      margin-top: -8px;
+    }
+
+    .telemetry-header {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .telemetry-header h3 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+
+    .telemetry-header p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    #pickupTotals {
+      font-family: "JetBrains Mono", monospace;
+      color: #cbd5ff;
+      font-size: 0.9rem;
+      background: rgba(59, 130, 246, 0.08);
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+    }
+
+    #winnerOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 6, 18, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 200;
+    }
+
+    #winnerOverlay.show {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .winner-card {
+      background: linear-gradient(145deg, #1b2140, #13172b);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 32px 40px;
+      text-align: center;
+      max-width: 420px;
+      box-shadow: 0 22px 65px rgba(0, 0, 0, 0.5);
+    }
+
+    .winner-card h2 {
+      margin: 0 0 10px;
+      font-size: 1.8rem;
+      color: var(--gold);
+    }
+
+    .winner-card p {
+      margin: 0 0 20px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .winner-card button {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+
+    .winner-card button:hover {
+      transform: translateY(-1px);
+    }
   </style>
 </head>
 <body>
@@ -365,10 +463,11 @@
         <button id="stepForward">Next ›</button>
         <label>Speed
           <select id="speedSelect">
-            <option value="800">0.8s</option>
-            <option value="400" selected>0.4s</option>
-            <option value="200">0.2s</option>
+            <option value="60" selected>0.06s</option>
             <option value="120">0.12s</option>
+            <option value="200">0.2s</option>
+            <option value="400">0.4s</option>
+            <option value="800">0.8s</option>
           </select>
         </label>
         <input type="range" id="frameSlider" min="0" max="0" value="0" />
@@ -382,6 +481,7 @@
             <strong id="scoreLine">Score A=0 • B=0 • Gold=0</strong>
             <span class="badge" id="stepBadge">Step 0</span>
             <span class="badge gold" id="goldBadge">Gold: 0 cells</span>
+            <span class="badge" id="pickupBadge">Pickups: A0 • B0</span>
           </div>
           <div>
             <h3 style="margin: 10px 0 6px;">Engine events</h3>
@@ -398,8 +498,26 @@
       </div>
     </section>
 
+    <section id="telemetry" class="panel">
+      <div class="telemetry-header">
+        <div>
+          <h3>Pickup timeline</h3>
+          <p>Tracks how often each team successfully pairs up and lifts gold.</p>
+        </div>
+        <div id="pickupTotals">Totals pending…</div>
+      </div>
+      <canvas id="pickupChart"></canvas>
+    </section>
+
     <div id="status">Loading frames.json…</div>
   </main>
+  <div id="winnerOverlay">
+    <div class="winner-card">
+      <h2 id="winnerTitle">Simulation complete</h2>
+      <p id="winnerDetail">Final scores will appear once the last frame is reached.</p>
+      <button id="closeWinner">Close</button>
+    </div>
+  </div>
 
   <script>
     const gridEl = document.getElementById("grid");
@@ -416,6 +534,14 @@
     const scoreLine = document.getElementById("scoreLine");
     const stepBadge = document.getElementById("stepBadge");
     const goldBadge = document.getElementById("goldBadge");
+    const pickupBadge = document.getElementById("pickupBadge");
+    const pickupChart = document.getElementById("pickupChart");
+    const pickupTotalsEl = document.getElementById("pickupTotals");
+    const pickupChartCtx = pickupChart ? pickupChart.getContext("2d") : null;
+    const winnerOverlay = document.getElementById("winnerOverlay");
+    const winnerTitle = document.getElementById("winnerTitle");
+    const winnerDetail = document.getElementById("winnerDetail");
+    const closeWinnerBtn = document.getElementById("closeWinner");
 
     let frames = [];
     let cells = [];
@@ -429,6 +555,9 @@
     let selectedCellKey = null;
     let selectedRobotId = null;
     let lastCellRobots = null;
+    let pickupSeries = { A: [], B: [], max: 1 };
+    let winnerSummary = null;
+    let winnerDismissed = false;
 
     let generatedAt = null;
     let runConfig = null;
@@ -461,6 +590,8 @@
         height = frames[0].height || 20;
         buildGrid(width, height);
         frameSlider.max = frames.length - 1;
+        preparePickupSeries();
+        prepareWinnerSummary();
         renderFrame(0);
         const timeLabel = generatedAt ? formatTimestamp(generatedAt) : null;
         const seedLabel =
@@ -475,6 +606,15 @@
         statusEl.textContent = err.message;
         logsEl.textContent = "No frames available.";
       });
+
+    if (closeWinnerBtn) {
+      closeWinnerBtn.addEventListener("click", () => {
+        winnerDismissed = true;
+        if (winnerOverlay) {
+          winnerOverlay.classList.remove("show");
+        }
+      });
+    }
 
     function buildGrid(w, h) {
       gridEl.style.gridTemplateColumns = `repeat(${w}, var(--cell-size))`;
@@ -516,6 +656,8 @@
       scoreLine.textContent = `Score A=${frame.scores.A} • B=${frame.scores.B} • Gold=${frame.gold.length}`;
       stepBadge.textContent = `Step ${frame.step}`;
       goldBadge.textContent = `Gold: ${frame.gold.length} cells`;
+      updatePickupBadge(frame);
+      drawPickupChart(index);
 
       const depositMap = new Map(
         Object.entries(frame.deposits).map(([team, pos]) => [pos.join(","), team])
@@ -606,6 +748,7 @@
         frame.logs && frame.logs.length
           ? frame.logs.slice(-10).join("\n")
           : "No engine events recorded for this frame.";
+      updateWinnerOverlay(index);
     }
 
     function formatTimestamp(value) {
@@ -839,6 +982,134 @@
         if (current > 0) renderFrame(current - 1);
       }
     });
+
+    window.addEventListener("resize", () => {
+      drawPickupChart(current);
+    });
+
+    function prepareWinnerSummary() {
+      if (!frames.length) {
+        winnerSummary = null;
+        return;
+      }
+      const finalFrame = frames[frames.length - 1];
+      if (!finalFrame || !finalFrame.scores) {
+        winnerSummary = null;
+        return;
+      }
+      const scoreA = Number(finalFrame.scores.A ?? 0);
+      const scoreB = Number(finalFrame.scores.B ?? 0);
+      const remainingGold = Array.isArray(finalFrame.gold) ? finalFrame.gold.length : 0;
+      const steps = finalFrame.step ?? frames.length - 1;
+      let title = "Draw!";
+      if (scoreA > scoreB) {
+        title = "Team A Wins!";
+      } else if (scoreB > scoreA) {
+        title = "Team B Wins!";
+      }
+      const detail = `Final score A=${scoreA} • B=${scoreB} after ${steps} steps. Remaining gold: ${remainingGold}.`;
+      winnerSummary = { title, detail };
+      winnerDismissed = false;
+    }
+
+    function updateWinnerOverlay(index) {
+      if (!winnerSummary || !winnerOverlay) return;
+      const isFinal = frames.length && index >= frames.length - 1;
+      if (isFinal && !winnerDismissed) {
+        if (winnerTitle) winnerTitle.textContent = winnerSummary.title;
+        if (winnerDetail) winnerDetail.textContent = winnerSummary.detail;
+        winnerOverlay.classList.add("show");
+      } else {
+        if (!isFinal) {
+          winnerDismissed = false;
+        }
+        winnerOverlay.classList.remove("show");
+      }
+    }
+
+    function preparePickupSeries() {
+      if (!frames.length) return;
+      pickupSeries.A = frames.map((frame) => (frame.pickups && frame.pickups.A) || 0);
+      pickupSeries.B = frames.map((frame) => (frame.pickups && frame.pickups.B) || 0);
+      pickupSeries.max = Math.max(1, ...pickupSeries.A, ...pickupSeries.B);
+      if (pickupTotalsEl) {
+        const final = frames[frames.length - 1] || {};
+        const totals = final.pickups || {};
+        pickupTotalsEl.textContent = `Total pickups — Team A: ${totals.A || 0}, Team B: ${totals.B || 0}`;
+      }
+    }
+
+    function updatePickupBadge(frame) {
+      if (!pickupBadge) return;
+      const counts = frame.pickups || {};
+      pickupBadge.textContent = `Pickups: A${counts.A || 0} • B${counts.B || 0}`;
+    }
+
+    function drawPickupChart(index) {
+      if (!pickupChartCtx || !frames.length) return;
+      const width = pickupChart.clientWidth || pickupChart.width;
+      const height = pickupChart.clientHeight || pickupChart.height;
+      if (pickupChart.width !== width || pickupChart.height !== height) {
+        pickupChart.width = width;
+        pickupChart.height = height;
+      }
+      const ctx = pickupChartCtx;
+      ctx.clearRect(0, 0, width, height);
+
+      const padding = 28;
+      const innerWidth = Math.max(1, width - padding * 2);
+      const innerHeight = Math.max(1, height - padding * 2);
+      const maxVal = pickupSeries.max || 1;
+      const steps = pickupSeries.A.length;
+      const scaleX = steps > 1 ? innerWidth / (steps - 1) : innerWidth;
+      const scaleY = innerHeight / maxVal;
+
+      ctx.fillStyle = "#05070f";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 1;
+      const gridLines = 4;
+      for (let i = 0; i <= gridLines; i++) {
+        const y = padding + (innerHeight / gridLines) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+      }
+
+      drawSeries(pickupSeries.A, "#38bdf8");
+      drawSeries(pickupSeries.B, "#f87171");
+
+      const markerX = padding + (steps > 1 ? index * scaleX : 0);
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.moveTo(markerX, padding);
+      ctx.lineTo(markerX, height - padding);
+      ctx.stroke();
+
+      ctx.fillStyle = "#8c95b8";
+      ctx.font = "12px 'Inter', sans-serif";
+      ctx.fillText(`0`, padding - 18, height - padding + 4);
+      ctx.fillText(`${maxVal}`, padding - 28, padding + 4);
+
+      function drawSeries(series, color) {
+        if (!series.length) return;
+        ctx.beginPath();
+        for (let i = 0; i < series.length; i++) {
+          const value = series[i];
+          const x = padding + (steps > 1 ? i * scaleX : innerWidth / 2);
+          const y = height - padding - value * scaleY;
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
   </script>
 </body>
 </html>

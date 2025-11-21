@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import json
 from datetime import datetime
 
+from .cyber_physical_game import CyberPhysicalGameAnalyzer
 from .engine import SimulationEngine
 from .models import Frame, GridWorld, Robot
 from .strategy_paxos import paxos_strategy
@@ -15,8 +16,9 @@ from .strategy_paxos import paxos_strategy
 @dataclass
 class Config:
     ticks: int = 200
+    max_ticks: int = 1000
     seed: int = 123
-    gold: int = 25
+    gold: int = 10
     print_every: int = 10
     log_file: Optional[str] = "log.txt"
     grid_size: int = 20
@@ -26,6 +28,8 @@ class Config:
     message_loss_chance: float = 0.0
     message_reorder_chance: float = 0.0
     consensus: str = "paxos"
+    analysis_file: Optional[str] = "game_analysis.json"
+    run_until_finished: bool = True
 
 
 class Simulation:
@@ -53,14 +57,41 @@ class Simulation:
 
     def run(self) -> None:
         frames_for_export: List[Dict[str, Any]] = []
-        for _ in range(self.cfg.ticks):
-            frame = self.step()
-            frames_for_export.append(frame.to_dict())
-            if (self.tick - 1) % self.cfg.print_every == 0:
-                self._print_frame(frame)
+        analyzer: Optional[CyberPhysicalGameAnalyzer] = None
+        extended_notice_emitted = False
+        if self.cfg.analysis_file:
+            world_meta = {
+                "grid": {"width": self.world.width, "height": self.world.height},
+                "deposits": {team: list(pos) for team, pos in self.world.deposits.items()},
+            }
+            analyzer = CyberPhysicalGameAnalyzer(list(self.robots), self.cfg, world_meta)
+        if self.cfg.run_until_finished or self.cfg.ticks > 0:
+            while True:
+                frame = self.step()
+                frames_for_export.append(frame.to_dict())
+                if analyzer:
+                    analyzer.observe(frame)
+                if (self.tick - 1) % self.cfg.print_every == 0:
+                    self._print_frame(frame)
+                finished = self._game_finished()
+                tick_cap_reached = self.cfg.ticks > 0 and self.tick >= self.cfg.ticks
+                hard_cap_reached = self.cfg.max_ticks > 0 and self.tick >= self.cfg.max_ticks
+                if hard_cap_reached and not finished:
+                    self._emit_max_tick_notice()
+                    break
+                if finished:
+                    break
+                if tick_cap_reached:
+                    if not self.cfg.run_until_finished:
+                        break
+                    if not extended_notice_emitted:
+                        self._emit_extension_notice()
+                        extended_notice_emitted = True
         self._log_footer()
         if self.cfg.frames_file:
             self._write_frames(frames_for_export)
+        if analyzer:
+            analyzer.write_report(Path(self.cfg.analysis_file))
         if self.log_handle:
             self.log_handle.close()
 
@@ -148,6 +179,10 @@ class Simulation:
         self.log_handle.write(
             f"Score A={frame.scores['A']}  B={frame.scores['B']}  Gold remaining={len(frame.gold)}\n"
         )
+        if getattr(frame, "pickups", None):
+            self.log_handle.write(
+                f"Pickups A={frame.pickups.get('A', 0)}  B={frame.pickups.get('B', 0)}\n"
+            )
         for robot in frame.robots:
             status = "carrying" if robot.carrying else "idle"
             self.log_handle.write(
@@ -171,6 +206,9 @@ class Simulation:
     def _print_frame(self, frame: Frame) -> None:
         print(f"=== STEP {frame.step:03d} ===")
         print(f"Score: Team A = {frame.scores['A']}, Team B = {frame.scores['B']}")
+        pickups = getattr(frame, "pickups", {}) or {}
+        if pickups:
+            print(f"Pickups: Team A = {pickups.get('A', 0)}, Team B = {pickups.get('B', 0)}")
         print(f"Gold remaining: {len(frame.gold)}\n")
         print(self._render_ascii(frame))
         print()
@@ -187,6 +225,25 @@ class Simulation:
             grid[robot.pos[1]][robot.pos[0]] = f" {marker}"
         lines = ["".join(row) for row in grid]
         return "\n".join(lines)
+
+    def _game_finished(self) -> bool:
+        if self.world.gold:
+            return False
+        return not any(robot.carrying for robot in self.robots)
+
+    def _emit_extension_notice(self) -> None:
+        message = "Tick budget exhausted; continuing until all gold is secured."
+        print(message)
+        if self.log_handle:
+            self.log_handle.write(message + "\n\n")
+            self.log_handle.flush()
+
+    def _emit_max_tick_notice(self) -> None:
+        message = f"Hard cap of {self.cfg.max_ticks} ticks reached before all gold was collected."
+        print(message)
+        if self.log_handle:
+            self.log_handle.write(message + "\n\n")
+            self.log_handle.flush()
 
     def _write_frames(self, frames: List[Dict[str, Any]]) -> None:
         path = Path(self.cfg.frames_file)

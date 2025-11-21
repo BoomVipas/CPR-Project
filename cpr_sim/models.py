@@ -60,6 +60,7 @@ class Robot:
     handshake_active_index: Optional[int] = None
     handshake_partner: Optional[int] = None
     handshake_target: Optional[Tuple[int, int]] = None
+    handshake_anchor: Optional[Tuple[int, int]] = None
 
 
 @dataclass
@@ -84,6 +85,7 @@ class Frame:
     deposits: Dict[str, Tuple[int, int]]
     width: int
     height: int
+    pickups: Dict[str, int] = field(default_factory=dict)
     logs: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -126,6 +128,7 @@ class Frame:
                     "handshake_active_index": getattr(r, "handshake_active_index", None),
                     "handshake_partner": getattr(r, "handshake_partner", None),
                     "handshake_target": list(r.handshake_target) if getattr(r, "handshake_target", None) else None,
+                    "handshake_anchor": list(r.handshake_anchor) if getattr(r, "handshake_anchor", None) else None,
                 }
             )
 
@@ -134,6 +137,7 @@ class Frame:
             "robots": robot_payloads,
             "gold": [list(g) for g in self.gold],
             "scores": dict(self.scores),
+            "pickups": dict(self.pickups),
             "deposits": {team: list(pos) for team, pos in self.deposits.items()},
             "width": self.width,
             "height": self.height,
