@@ -144,18 +144,37 @@ The CLI (`cpr_sim/cli.py`) exposes runtime controls like `--ticks`, `--gold`, `-
 
 ```bash
 # quick stream (no animation)
-python main.py --ticks 60 --seed 123 --gold 25 --print_every 1
+python main.py --ticks 60 --seed 123 --gold 10 --print-every 1
 
 # smooth 5 FPS animation with clear-screen redraws
-python main.py --ticks 60 --seed 123 --gold 25 --print_every 1 --sleep-sec 0.2 --animate
+python main.py --ticks 60 --seed 123 --gold 10 --print-every 1 --sleep-sec 0.2 --animate
 ```
 
-The CLI also honours `--num-per-team`, `--log-file`, and `--no-detailed-log` for customised experiments.
-By default the simulator keeps stepping beyond `--ticks` until every gold bar has been deposited so the
-generated `frames.json` captures the full game. Pass `--no-run-until-finished` if you need the
-legacy behaviour of stopping strictly after the requested tick budget. A hard ceiling of 1,000 ticks remains
-in place via `--max-ticks` to prevent runaway simulations; adjust that flag if you want to tighten or loosen
-the absolute limit.
+Key flags:
+
+* `--robots-per-team` — set team size (default 10).  
+* `--gold` — initial piles (default 10).  
+* `--consensus {paxos,handshake}` — choose coordination mode (handshake mirrors the CSP logic from Milestone 3).  
+* `--log-file`, `--frames-file`, `--analysis-file` — redirect artefacts or disable by passing `""`.  
+* `--run-until-finished / --no-run-until-finished` — control whether the sim continues beyond `--ticks`.  
+
+The engine keeps stepping until all gold is deposited (unless `--no-run-until-finished`), guaranteeing that
+the generated `frames.json` captures the entire match. A hard ceiling of 1,000 ticks remains in place via
+`--max-ticks` to prevent runaway simulations.
+
+---
+
+## Visualization
+
+Every run refreshes `frames.json`, which drives the in-repo viewer:
+
+```bash
+python main.py --ticks 200 --print-every 20 --consensus handshake
+python3 -m http.server 8000
+```
+
+Point your browser at `http://localhost:8000/visualization.html` to scrub through frames, track robots,
+adjust playback speed down to 0.06 s, and view the winner overlay once the final frame is reached.
 
 ---
 
